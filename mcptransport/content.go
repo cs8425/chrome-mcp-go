@@ -127,3 +127,10 @@ func ResultText(s string) *ToolResult {
 func ResultError(s string) *ToolResult {
 	return &ToolResult{Content: []ContentPart{Text(s)}, IsError: true}
 }
+
+// ResultImage builds a successful image result (data is base64). Returned to
+// the model as an inline image content block so a vision-capable LLM can look
+// at the page directly.
+func ResultImage(data, mime string) *ToolResult {
+	return &ToolResult{Content: []ContentPart{Image(data, mime)}}
+}

@@ -188,14 +188,22 @@ func (s *StdioServer) handleInitialize(msg Request) Response {
 			return errorResponse(msg.ID, -32602, "invalid initialize params", nil)
 		}
 	}
+	// Negotiate the session version. Honour an explicit modern handshake;
+	// otherwise fall back to the legacy handshake (older clients). The
+	// negotiated version is the default for later requests that carry no
+	// inline _meta.
+	negotiated := VersionLegacy
+	if p.ProtocolVersion == VersionModern {
+		negotiated = VersionModern
+	}
 	s.mu.Lock()
-	s.version = VersionLegacy
+	s.version = negotiated
 	s.mu.Unlock()
 	return Response{
 		JSONRPC: JSONRPCVersion,
 		ID:      msg.ID,
 		Result: map[string]any{
-			"protocolVersion": VersionLegacy,
+			"protocolVersion": negotiated,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": s.server.Name, "version": s.server.Version},
 			"instructions":    s.server.Instructions,
