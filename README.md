@@ -189,6 +189,17 @@ The HTTP transport implements the modern per-request-metadata revision
 `2025-11-25`. Responses are `application/json`; there is no SSE server-push,
 resources, or prompts (this is a tool-only server).
 
+## Reconnecting after a browser restart
+
+If Chrome is restarted while the server is running, the DevTools WebSocket
+connection drops. The server reconnects **lazily**: the next tool call
+detects the dead connection, transparently re-dials the endpoint, and
+re-adopts a tab — you do not need to restart the server. A call that was
+in-flight when the browser went away fails once (`ErrClosed`); the following
+call recovers. If Chrome is not back up yet the call returns
+`browser unavailable: …` and retries on the next call. (Startup still requires
+Chrome to be running: the server dials once at start.)
+
 ## Regenerating the CDP client
 
 `internal/cdp/cdp_*_gen.go` is generated from the vendored protocol JSON and
