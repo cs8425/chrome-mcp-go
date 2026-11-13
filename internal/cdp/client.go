@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -36,15 +37,19 @@ type rpcResult struct {
 // page endpoint). It runs a reader goroutine that routes responses by id and
 // events by method.
 type Conn struct {
-	ws   *websocket.Conn
-	wmu  sync.Mutex // serialises writes (one conn, many callers)
-	next atomic.Int64
+	ws          *websocket.Conn
+	wmu         sync.Mutex // serialises writes (one conn, many callers)
+	next        atomic.Int64
+	callTimeout atomic.Int64 // per-call deadline in ns (0 = none); see SetCallTimeout
 
 	pmu     sync.Mutex
 	pending map[int64]chan rpcResult
 
 	emMu        sync.Mutex
 	subscribers map[string][]*sub // key: method + "\x00" + sessionID
+
+	igMu   sync.Mutex          // guards igSeen
+	igSeen map[string]struct{} // event methods seen with no subscriber (logged once)
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -110,6 +115,15 @@ func version(ctx context.Context, hostPort string) (*versionInfo, error) {
 
 // call sends a JSON-RPC request and waits for its response (routed by id).
 func (c *Conn) call(ctx context.Context, sessionID, method string, params, result any) error {
+	// Bound this round-trip: cap at callTimeout unless the caller already set an
+	// equal-or-shorter deadline. Caps both the ws write and the response wait.
+	if d := time.Duration(c.callTimeout.Load()); d > 0 {
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > d {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
 	id := c.next.Add(1)
 	ch := make(chan rpcResult, 1)
 	c.pmu.Lock()
@@ -161,6 +175,11 @@ func (c *Conn) drop(id int64) {
 	c.pmu.Unlock()
 }
 
+// SetCallTimeout sets the per-call deadline (0 disables). Each call caps its own
+// wait at min(d, caller's remaining budget) so it also honours an outer request
+// deadline. Safe to call concurrently (atomic).
+func (c *Conn) SetCallTimeout(d time.Duration) { c.callTimeout.Store(int64(d)) }
+
 func (c *Conn) readLoop() {
 	ctx := context.Background()
 	for {
@@ -187,6 +206,9 @@ func (c *Conn) readLoop() {
 			c.pmu.Unlock()
 			if ch != nil {
 				ch <- rpcResult{result: msg.Result, err: msg.Error}
+			} else {
+				// A reply for a call we already dropped (timed out) or never made.
+				log.Printf("cdp: response for unknown/stale id %d, passing", *msg.ID)
 			}
 			continue
 		}
@@ -199,12 +221,36 @@ func (c *Conn) readLoop() {
 func (c *Conn) dispatchEvent(method, sessionID string, params json.RawMessage) {
 	c.emMu.Lock()
 	subs := c.subscribers[method+"\x00"+sessionID]
+	if len(subs) == 0 {
+		// We never subscribed to this event: pass it (log once per method).
+		c.emMu.Unlock()
+		c.noteIgnored(method)
+		return
+	}
 	// Copy so handlers can (un)subscribe without holding the lock.
 	snapshot := make([]*sub, len(subs))
 	copy(snapshot, subs)
 	c.emMu.Unlock()
 	for _, s := range snapshot {
 		c.safeCall(s.fn, params)
+	}
+}
+
+// noteIgnored logs an unsubscribed event method the first time it is seen, so
+// the read loop surfaces (without flooding) the CDP traffic we deliberately
+// pass over.
+func (c *Conn) noteIgnored(method string) {
+	c.igMu.Lock()
+	if c.igSeen == nil {
+		c.igSeen = map[string]struct{}{}
+	}
+	_, seen := c.igSeen[method]
+	if !seen {
+		c.igSeen[method] = struct{}{}
+	}
+	c.igMu.Unlock()
+	if !seen {
+		log.Printf("cdp: no subscriber for event %q, passing", method)
 	}
 }
 

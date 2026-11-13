@@ -195,7 +195,7 @@ func (c *Core) currentURL(ctx context.Context) (string, error) {
 			URL string `json:"url"`
 		} `json:"targetInfo"`
 	}
-	if err := c.browser.RawCall(ctx, "Target.getTargetInfo",
+	if err := c.browser.Load().RawCall(ctx, "Target.getTargetInfo",
 		map[string]any{"targetId": c.currentTargetID()}, &res); err != nil {
 		return "", err
 	}

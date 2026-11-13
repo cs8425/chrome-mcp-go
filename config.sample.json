@@ -3,6 +3,8 @@
   "http": "127.0.0.1:8766",
   "cdp": "127.0.0.1:9222",
   "max_bytes": 0,
+  "cdp_call_timeout_seconds": 60,
+  "request_timeout_seconds": 60,
   "file_root": "/path/to/workspace",
   "browser_root": "/tmp/Downloads",
   "browser_vroot": "/downloads",

@@ -48,7 +48,7 @@ func (c *Core) cdpCall(ctx context.Context, call *mcptransport.Call) (*mcptransp
 	var res json.RawMessage
 	var err error
 	if a.Browser {
-		err = c.browser.RawCall(ctx, a.Method, params, &res)
+		err = c.browser.Load().RawCall(ctx, a.Method, params, &res)
 	} else {
 		err = c.page().RawCall(ctx, a.Method, params, &res)
 	}

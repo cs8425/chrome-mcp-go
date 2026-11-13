@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 )
 
 var (
@@ -64,12 +65,24 @@ func (r *Registry) Register(t *Tool, h Handler) error {
 	return nil
 }
 
-// Dispatch runs the handler for call.Name.
-func (r *Registry) Dispatch(ctx context.Context, call *Call) (*ToolResult, error) {
+// Dispatch runs the handler for call.Name. A panicking handler is recovered and
+// turned into a tool-execution error so that a single bad tool call can never
+// take down the whole server process. This matters because stdio runs each
+// request in its own goroutine WITHOUT a recover (an unrecovered panic there
+// kills the process), whereas Streamable HTTP only recovers at the net/http
+// layer. Recovering here covers both transports from one choke point.
+func (r *Registry) Dispatch(ctx context.Context, call *Call) (res *ToolResult, err error) {
 	h, ok := r.handlers[call.Name]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, call.Name)
 	}
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("mcptransport: tool %q panicked and was recovered: %v", call.Name, p)
+			res = ResultError(fmt.Sprintf("tool %s panicked: %v", call.Name, p))
+			err = nil
+		}
+	}()
 	return h(ctx, call)
 }
 

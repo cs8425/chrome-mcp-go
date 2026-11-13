@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // maxBodyBytes caps a single MCP request body (4 MiB), matching the stdio
@@ -26,6 +27,10 @@ type Server struct {
 	Origin map[string]bool
 
 	Reg *Registry
+
+	// RequestTimeout bounds each MCP request end-to-end (0 disables). It caps the
+	// whole tool call, on top of the per-CDP-call deadline the Core applies.
+	RequestTimeout time.Duration
 }
 
 // Handler returns the Streamable HTTP handler (2026-07-28 + 2025-11-25).
@@ -182,7 +187,13 @@ func (s *Server) handleLegacy(w http.ResponseWriter, r *http.Request, req Reques
 }
 
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, req Request, version string, p CallParams) {
-	out := s.dispatchCore(r.Context(), req, version, p)
+	ctx := r.Context()
+	if s.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.RequestTimeout)
+		defer cancel()
+	}
+	out := s.dispatchCore(ctx, req, version, p)
 	if out.code != 0 {
 		writeRPCError(w, out.status, req.ID, out.code, out.msg, out.data)
 		return

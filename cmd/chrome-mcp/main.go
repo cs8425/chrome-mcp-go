@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"chrome-mcp/internal/tools"
 	"mcptransport"
@@ -26,6 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect CDP at %s: %v", cfg.CDP, err)
 	}
+	core.SetCDPCallTimeout(time.Duration(cfg.CDPCallTimeoutSec) * time.Second)
 	if cfg.MaxBytes > 0 {
 		core.SetMaxBytes(cfg.MaxBytes)
 	}
@@ -50,11 +52,12 @@ func main() {
 	}
 
 	srv := &mcptransport.Server{
-		Name:         "chrome-mcp",
-		Version:      serverVersion,
-		Instructions: "Chrome DevTools MCP server (pure Go).",
-		Reg:          reg,
-		Origin:       map[string]bool{"*": true},
+		Name:           "chrome-mcp",
+		Version:        serverVersion,
+		Instructions:   "Chrome DevTools MCP server (pure Go).",
+		Reg:            reg,
+		Origin:         map[string]bool{"*": true},
+		RequestTimeout: time.Duration(cfg.RequestTimeoutSec) * time.Second,
 	}
 
 	if cfg.Stdio {

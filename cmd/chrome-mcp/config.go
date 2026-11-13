@@ -34,30 +34,38 @@ type settings struct {
 	BrowserRoot  string
 	BrowserVRoot string
 	ToolPrefix   string
-	Packs        Packs
+	// CDPCallTimeoutSec caps one CDP round trip; RequestTimeoutSec caps a whole
+	// MCP request (tool call). Independent; seconds; 0 = disabled.
+	CDPCallTimeoutSec int
+	RequestTimeoutSec int
+	Packs             Packs
 }
 
 func defaultSettings() settings {
 	return settings{
-		HTTP:         "127.0.0.1:8766",
-		CDP:          "127.0.0.1:9222",
-		BrowserVRoot: "/",
-		Packs:        Packs{Core: true, Browse: true, Dev: true, Files: true},
+		HTTP:              "127.0.0.1:8766",
+		CDP:               "127.0.0.1:9222",
+		CDPCallTimeoutSec: 60,
+		RequestTimeoutSec: 60,
+		BrowserVRoot:      "/",
+		Packs:             Packs{Core: true, Browse: true, Dev: true, Files: true},
 	}
 }
 
 // fileConfig mirrors settings with pointer fields so a JSON document can omit a
 // key ("unset") versus set it to a zero value. Only present keys overlay.
 type fileConfig struct {
-	Stdio        *bool      `json:"stdio"`
-	HTTP         *string    `json:"http"`
-	CDP          *string    `json:"cdp"`
-	MaxBytes     *int       `json:"max_bytes"`
-	FileRoot     *string    `json:"file_root"`
-	BrowserRoot  *string    `json:"browser_root"`
-	BrowserVRoot *string    `json:"browser_vroot"`
-	ToolPrefix   *string    `json:"tool_prefix"`
-	Packs        *packsFile `json:"packs"`
+	Stdio             *bool      `json:"stdio"`
+	HTTP              *string    `json:"http"`
+	CDP               *string    `json:"cdp"`
+	MaxBytes          *int       `json:"max_bytes"`
+	FileRoot          *string    `json:"file_root"`
+	BrowserRoot       *string    `json:"browser_root"`
+	BrowserVRoot      *string    `json:"browser_vroot"`
+	ToolPrefix        *string    `json:"tool_prefix"`
+	CDPCallTimeoutSec *int       `json:"cdp_call_timeout_seconds"`
+	RequestTimeoutSec *int       `json:"request_timeout_seconds"`
+	Packs             *packsFile `json:"packs"`
 }
 
 type packsFile struct {
@@ -92,6 +100,12 @@ func (s *settings) applyFileConfig(fc *fileConfig) {
 	}
 	if fc.ToolPrefix != nil {
 		s.ToolPrefix = *fc.ToolPrefix
+	}
+	if fc.CDPCallTimeoutSec != nil {
+		s.CDPCallTimeoutSec = *fc.CDPCallTimeoutSec
+	}
+	if fc.RequestTimeoutSec != nil {
+		s.RequestTimeoutSec = *fc.RequestTimeoutSec
 	}
 	if p := fc.Packs; p != nil {
 		if p.Core != nil {
@@ -128,6 +142,16 @@ func (s *settings) applyEnv(getenv func(string) string) {
 			s.MaxBytes = n
 		}
 	}
+	if v := getenv("CDPMCP_CDP_CALL_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.CDPCallTimeoutSec = n
+		}
+	}
+	if v := getenv("CDPMCP_REQUEST_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.RequestTimeoutSec = n
+		}
+	}
 	if v := getenv("CDPMCP_PACK_CORE"); v != "" {
 		s.Packs.Core = parseBool(v)
 	}
@@ -155,6 +179,8 @@ func loadConfig() settings {
 	rootDir := flag.String("root", "", "confine file reads/writes (screenshot saveAs, upload/download, ...) to this directory")
 	browserRoot := flag.String("browser-root", "", "path the BROWSER sees for the shared dir (Chrome in a container, e.g. /tmp/Downloads)")
 	browserVRoot := flag.String("browser-vroot", "", "virtual dir of the file box that --browser-root maps to (e.g. /downloads)")
+	cdpCallTimeout := flag.Int("cdp-call-timeout", 60, "per-CDP-call deadline in seconds (0 = no per-call deadline)")
+	requestTimeout := flag.Int("request-timeout", 60, "per-MCP-request deadline in seconds (0 = no request deadline)")
 	flag.Parse()
 
 	// Only flags the user actually set override lower layers.
@@ -206,6 +232,12 @@ func loadConfig() settings {
 	}
 	if set["browser-vroot"] {
 		cfg.BrowserVRoot = *browserVRoot
+	}
+	if set["cdp-call-timeout"] {
+		cfg.CDPCallTimeoutSec = *cdpCallTimeout
+	}
+	if set["request-timeout"] {
+		cfg.RequestTimeoutSec = *requestTimeout
 	}
 	return cfg
 }

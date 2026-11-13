@@ -142,7 +142,7 @@ func (c *Core) enableDownloads(ctx context.Context) error {
 	}
 
 	var unsub []func()
-	unsub = append(unsub, c.browser.Subscribe("Browser.downloadWillBegin", func(params json.RawMessage) {
+	unsub = append(unsub, c.browser.Load().Subscribe("Browser.downloadWillBegin", func(params json.RawMessage) {
 		var e struct {
 			Guid              string `json:"guid"`
 			URL               string `json:"url"`
@@ -164,7 +164,7 @@ func (c *Core) enableDownloads(ctx context.Context) error {
 		}
 		c.downloadsMu.Unlock()
 	}))
-	unsub = append(unsub, c.browser.Subscribe("Browser.downloadProgress", func(params json.RawMessage) {
+	unsub = append(unsub, c.browser.Load().Subscribe("Browser.downloadProgress", func(params json.RawMessage) {
 		var e struct {
 			Guid          string `json:"guid"`
 			TotalBytes    int64  `json:"totalBytes"`
@@ -194,7 +194,7 @@ func (c *Core) enableDownloads(ctx context.Context) error {
 		u()
 	}
 
-	return c.browser.RawCall(ctx, "Browser.setDownloadBehavior", map[string]any{
+	return c.browser.Load().RawCall(ctx, "Browser.setDownloadBehavior", map[string]any{
 		"behavior":      "allow",
 		"downloadPath":  dir,
 		"eventsEnabled": true,

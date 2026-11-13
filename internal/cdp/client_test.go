@@ -75,6 +75,9 @@ func startFakeCDP(t *testing.T) (hostPort string) {
 				"Target.closeTarget", "Emulation.setDeviceMetricsOverride",
 				"Page.handleJavaScriptDialog":
 				out["result"] = map[string]any{}
+			case "Slow.never":
+				// Never respond: exercises the client-side per-call timeout.
+				continue
 			default:
 				out["error"] = map[string]any{"code": -32601, "message": "not found: " + req.Method}
 			}
@@ -173,5 +176,51 @@ func TestRPCError(t *testing.T) {
 	var re *rpcError
 	if !errors.As(err, &re) || re.Code != -32601 {
 		t.Errorf("err = %v, want rpcError code -32601", err)
+	}
+}
+
+// TestCallTimeout exercises SetCallTimeout: an unreplied command must fail with
+// DeadlineExceeded (not hang), a fast command must still succeed under the same
+// timeout, and an explicit tighter caller deadline must win over a larger
+// per-call timeout (A must never extend the caller's budget).
+func TestCallTimeout(t *testing.T) {
+	hostPort := startFakeCDP(t)
+	ctx := context.Background()
+	conn, err := DialBrowser(ctx, hostPort)
+	if err != nil {
+		t.Fatalf("DialBrowser: %v", err)
+	}
+	defer conn.Close()
+
+	var out map[string]any
+
+	// No caller deadline: the per-call timeout must fire, and quickly.
+	conn.SetCallTimeout(120 * time.Millisecond)
+	start := time.Now()
+	err = conn.Client("").RawCall(ctx, "Slow.never", nil, &out)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if el := time.Since(start); el < 50*time.Millisecond || el > 3*time.Second {
+		t.Errorf("timeout fired after %v, want ~120ms", el)
+	}
+
+	// A fast command must still succeed under the same short per-call timeout.
+	if err := conn.Client("").RawCall(ctx, "Target.getTargets", nil, &struct {
+		TargetInfos []any `json:"targetInfos"`
+	}{}); err != nil {
+		t.Errorf("fast call under timeout: %v", err)
+	}
+
+	// A larger per-call timeout must not extend a tighter caller deadline.
+	conn.SetCallTimeout(10 * time.Second)
+	cctx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	if err := conn.Client("").RawCall(cctx, "Slow.never", nil, &out); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded from caller ctx", err)
+	}
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("caller deadline ignored: waited %v", el)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"chrome-mcp/internal/cdp"
 	"chrome-mcp/internal/filebox"
@@ -20,13 +22,15 @@ import (
 // tools operate on by default.
 type Core struct {
 	hostPort string // Chrome DevTools endpoint host:port, for (re)dialing
-	conn     *cdp.Conn
-	browser  *cdp.Client // session "" (browser-level: Target.*)
+	conn     atomic.Pointer[cdp.Conn]
+	browser  atomic.Pointer[cdp.Client] // session "" (browser-level: Target.*)
 
 	mu          sync.Mutex
-	reconnectMu sync.Mutex // serialises (re)dial so concurrent calls reconnect once
-	targetID    string     // current tab id
-	sessionID   string     // current attached session
+	reconnectMu sync.Mutex   // serialises (re)dial so concurrent calls reconnect once
+	callTimeout atomic.Int64 // per-CDP-call deadline in ns (0 = none); applied to every conn
+	targetMu    sync.Mutex   // serialises structural tab ops (close/select/new) so they cannot interleave
+	targetID    string       // current tab id
+	sessionID   string       // current attached session
 	dlg         *dialogState
 	unsub       func()
 	attached    map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
@@ -61,7 +65,9 @@ func NewCore(ctx context.Context, hostPort string) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Core{hostPort: hostPort, conn: conn, browser: conn.Client(""), attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
+	c := &Core{hostPort: hostPort, attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
+	c.conn.Store(conn)
+	c.browser.Store(conn.Client(""))
 	// Adopt the first page target, if any.
 	if info, ok := c.firstPage(ctx); ok {
 		_ = c.selectTarget(ctx, info.TargetID)
@@ -110,7 +116,8 @@ func (c *Core) live(h mcptransport.Handler) mcptransport.Handler {
 // ensureLive redials the browser endpoint if the current connection is closed.
 func (c *Core) ensureLive(ctx context.Context) error {
 	c.mu.Lock()
-	alive := c.conn != nil && !c.conn.IsClosed()
+	cc := c.conn.Load()
+	alive := cc != nil && !cc.IsClosed()
 	c.mu.Unlock()
 	if alive {
 		return nil
@@ -126,26 +133,28 @@ func (c *Core) reconnect(ctx context.Context) error {
 
 	// Re-check: another caller may have reconnected while we waited.
 	c.mu.Lock()
-	connected := c.conn != nil && !c.conn.IsClosed()
+	cc := c.conn.Load()
+	connected := cc != nil && !cc.IsClosed()
 	c.mu.Unlock()
 	if connected {
 		return nil
 	}
 
-	if c.conn != nil {
-		_ = c.conn.Close()
+	if cc != nil {
+		_ = cc.Close()
 	}
 	conn, err := cdp.DialBrowser(ctx, c.hostPort)
 	if err != nil {
 		return err
 	}
+	conn.SetCallTimeout(time.Duration(c.callTimeout.Load()))
 
 	c.mu.Lock()
 	if c.unsub != nil {
 		c.unsub()
 	}
-	c.conn = conn
-	c.browser = conn.Client("")
+	c.conn.Store(conn)
+	c.browser.Store(conn.Client(""))
 	c.targetID = ""
 	c.sessionID = ""
 	c.dlg = nil
@@ -194,7 +203,7 @@ func (c *Core) firstPage(ctx context.Context) (*targetInfo, bool) {
 func (c *Core) page() *cdp.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn.Client(c.sessionID)
+	return c.conn.Load().Client(c.sessionID)
 }
 
 // listTargets returns page-type targets.
@@ -202,7 +211,7 @@ func (c *Core) listTargets(ctx context.Context) ([]targetInfo, error) {
 	var res struct {
 		TargetInfos []targetInfo `json:"targetInfos"`
 	}
-	if err := c.browser.RawCall(ctx, "Target.getTargets", nil, &res); err != nil {
+	if err := c.browser.Load().RawCall(ctx, "Target.getTargets", nil, &res); err != nil {
 		return nil, err
 	}
 	pages := make([]targetInfo, 0, len(res.TargetInfos))
@@ -216,13 +225,13 @@ func (c *Core) listTargets(ctx context.Context) ([]targetInfo, error) {
 
 // selectTarget activates and attaches to a target, making it current.
 func (c *Core) selectTarget(ctx context.Context, targetID string) error {
-	if err := c.browser.RawCall(ctx, "Target.activateTarget", map[string]string{"targetId": targetID}, nil); err != nil {
+	if err := c.browser.Load().RawCall(ctx, "Target.activateTarget", map[string]string{"targetId": targetID}, nil); err != nil {
 		return err
 	}
 	var res struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := c.browser.RawCall(ctx, "Target.attachToTarget",
+	if err := c.browser.Load().RawCall(ctx, "Target.attachToTarget",
 		map[string]any{"targetId": targetID, "flatten": true}, &res); err != nil {
 		return err
 	}
@@ -237,7 +246,7 @@ func (c *Core) selectTarget(ctx context.Context, targetID string) error {
 	c.mu.Unlock()
 
 	// Track dialogs on this tab (Page.javascriptDialogOpening).
-	page := c.conn.Client(res.SessionID)
+	page := c.conn.Load().Client(res.SessionID)
 	c.mu.Lock()
 	c.unsub = page.Subscribe("Page.javascriptDialogOpening", func(params json.RawMessage) {
 		var d dialogState
@@ -266,25 +275,34 @@ func (c *Core) ensureAttached(ctx context.Context, targetID string) (*cdp.Client
 	if targetID == c.targetID && c.sessionID != "" {
 		s := c.sessionID
 		c.mu.Unlock()
-		return c.conn.Client(s), nil
+		return c.conn.Load().Client(s), nil
 	}
 	if sid, ok := c.attached[targetID]; ok {
 		c.mu.Unlock()
-		return c.conn.Client(sid), nil
+		return c.conn.Load().Client(sid), nil
 	}
 	c.mu.Unlock()
 
 	var res struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := c.browser.RawCall(ctx, "Target.attachToTarget",
+	if err := c.browser.Load().RawCall(ctx, "Target.attachToTarget",
 		map[string]any{"targetId": targetID, "flatten": true}, &res); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
 	c.attached[targetID] = res.SessionID
 	c.mu.Unlock()
-	return c.conn.Client(res.SessionID), nil
+	return c.conn.Load().Client(res.SessionID), nil
+}
+
+// SetCDPCallTimeout sets the per-CDP-call deadline (0 disables) on the current
+// connection and on every future (re)connection.
+func (c *Core) SetCDPCallTimeout(d time.Duration) {
+	c.callTimeout.Store(int64(d))
+	if cc := c.conn.Load(); cc != nil {
+		cc.SetCallTimeout(d)
+	}
 }
 
 // ---------- tools ----------
@@ -373,6 +391,8 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		}
 		return jsonResult(pages)
 	case "new":
+		c.targetMu.Lock()
+		defer c.targetMu.Unlock()
 		url := a.URL
 		if url == "" {
 			url = "about:blank"
@@ -380,16 +400,18 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		var res struct {
 			TargetID string `json:"targetId"`
 		}
-		if err := c.browser.RawCall(ctx, "Target.createTarget", map[string]string{"url": url}, &res); err != nil {
+		if err := c.browser.Load().RawCall(ctx, "Target.createTarget", map[string]string{"url": url}, &res); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
 		_ = c.selectTarget(ctx, res.TargetID)
 		return jsonResult(map[string]string{"targetId": res.TargetID})
 	case "close":
+		c.targetMu.Lock()
+		defer c.targetMu.Unlock()
 		if a.TargetID == "" {
 			return mcptransport.ResultError("close needs targetId"), nil
 		}
-		if err := c.browser.RawCall(ctx, "Target.closeTarget", map[string]string{"targetId": a.TargetID}, nil); err != nil {
+		if err := c.browser.Load().RawCall(ctx, "Target.closeTarget", map[string]string{"targetId": a.TargetID}, nil); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
 		// Drop the closed target's cached session. If it was the current tab,
@@ -415,6 +437,8 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		}
 		return mcptransport.ResultText("closed " + a.TargetID), nil
 	case "select":
+		c.targetMu.Lock()
+		defer c.targetMu.Unlock()
 		if a.TargetID == "" {
 			return mcptransport.ResultError("select needs targetId"), nil
 		}
@@ -577,7 +601,7 @@ func (c *Core) window(ctx context.Context, call *mcptransport.Call) (*mcptranspo
 			State  string `json:"windowState"`
 		} `json:"bounds"`
 	}
-	if err := c.browser.RawCall(ctx, "Browser.getWindowForTarget", map[string]string{"targetId": target}, &wf); err != nil {
+	if err := c.browser.Load().RawCall(ctx, "Browser.getWindowForTarget", map[string]string{"targetId": target}, &wf); err != nil {
 		return mcptransport.ResultError(err.Error()), nil
 	}
 
@@ -606,12 +630,12 @@ func (c *Core) window(ctx context.Context, call *mcptransport.Call) (*mcptranspo
 		if len(bounds) == 0 {
 			return mcptransport.ResultError("set needs width/height/left/top or state"), nil
 		}
-		if err := c.browser.RawCall(ctx, "Browser.setWindowBounds",
+		if err := c.browser.Load().RawCall(ctx, "Browser.setWindowBounds",
 			map[string]any{"windowId": wf.WindowID, "bounds": bounds}, nil); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
 		// Re-read so the caller sees the applied bounds.
-		if err := c.browser.RawCall(ctx, "Browser.getWindowForTarget", map[string]string{"targetId": target}, &wf); err == nil {
+		if err := c.browser.Load().RawCall(ctx, "Browser.getWindowForTarget", map[string]string{"targetId": target}, &wf); err == nil {
 			return jsonResult(wf)
 		}
 		return mcptransport.ResultText(fmt.Sprintf("window %d updated", wf.WindowID)), nil

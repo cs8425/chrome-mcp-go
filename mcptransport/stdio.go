@@ -109,7 +109,13 @@ func (s *StdioServer) handleLine(line []byte, bw *bufio.Writer) {
 
 	// Requests run in their own goroutine (one slow tool can't block the read
 	// loop) and can be cancelled by ID.
-	ctx, cancel := context.WithCancel(context.Background())
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if s.server.RequestTimeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), s.server.RequestTimeout)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	s.track(msg.ID, cancel)
 	s.wg.Add(1)
 	go func() {
