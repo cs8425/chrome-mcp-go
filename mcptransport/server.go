@@ -57,15 +57,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per the 2026-07-28 revision, Accept/Content-Type rejections happen before
+	// JSON-RPC processing, so they are plain HTTP responses, not JSON-RPC bodies.
 	if !acceptsStreamableHTTP(r.Header.Get("Accept")) {
-		writeRPCError(w, http.StatusNotAcceptable, nil, -32600,
-			"Accept must include application/json and text/event-stream", nil)
+		writePlain(w, http.StatusNotAcceptable, "Accept must include application/json and text/event-stream")
 		return
 	}
 
 	if ct := strings.ToLower(r.Header.Get("Content-Type")); !strings.HasPrefix(ct, "application/json") {
-		writeRPCError(w, http.StatusUnsupportedMediaType, nil, -32600,
-			"Content-Type must be application/json", nil)
+		writePlain(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 
