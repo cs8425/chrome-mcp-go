@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 
 	"chrome-mcp/internal/cdp"
@@ -18,15 +19,17 @@ import (
 // Core holds shared browser state: the DevTools connection and the tab the
 // tools operate on by default.
 type Core struct {
-	conn    *cdp.Conn
-	browser *cdp.Client // session "" (browser-level: Target.*)
+	hostPort string // Chrome DevTools endpoint host:port, for (re)dialing
+	conn     *cdp.Conn
+	browser  *cdp.Client // session "" (browser-level: Target.*)
 
-	mu        sync.Mutex
-	targetID  string // current tab id
-	sessionID string // current attached session
-	dlg       *dialogState
-	unsub     func()
-	attached  map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
+	mu          sync.Mutex
+	reconnectMu sync.Mutex // serialises (re)dial so concurrent calls reconnect once
+	targetID    string     // current tab id
+	sessionID   string     // current attached session
+	dlg         *dialogState
+	unsub       func()
+	attached    map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
 
 	consoles     map[string][]string // targetID -> buffered console/exception/log lines
 	consolesMu   sync.Mutex
@@ -58,7 +61,7 @@ func NewCore(ctx context.Context, hostPort string) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Core{conn: conn, browser: conn.Client(""), attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
+	c := &Core{hostPort: hostPort, conn: conn, browser: conn.Client(""), attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
 	// Adopt the first page target, if any.
 	if info, ok := c.firstPage(ctx); ok {
 		_ = c.selectTarget(ctx, info.TargetID)
@@ -88,6 +91,95 @@ func (c *Core) fileBox() filebox.Box {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.files
+}
+
+// live wraps a tool handler so the browser connection is verified before the
+// handler runs. If Chrome has restarted (the DevTools WebSocket died) the
+// connection is transparently re-dialed and the first page target re-adopted,
+// so a browser restart no longer requires restarting the server: the next tool
+// call after a restart reconnects.
+func (c *Core) live(h mcptransport.Handler) mcptransport.Handler {
+	return func(ctx context.Context, call *mcptransport.Call) (*mcptransport.ToolResult, error) {
+		if err := c.ensureLive(ctx); err != nil {
+			return mcptransport.ResultError("browser unavailable: " + err.Error()), nil
+		}
+		return h(ctx, call)
+	}
+}
+
+// ensureLive redials the browser endpoint if the current connection is closed.
+func (c *Core) ensureLive(ctx context.Context) error {
+	c.mu.Lock()
+	alive := c.conn != nil && !c.conn.IsClosed()
+	c.mu.Unlock()
+	if alive {
+		return nil
+	}
+	return c.reconnect(ctx)
+}
+
+// reconnect dials a fresh DevTools connection and re-establishes per-tab state.
+// Serialised by reconnectMu so a burst of concurrent calls reconnects only once.
+func (c *Core) reconnect(ctx context.Context) error {
+	c.reconnectMu.Lock()
+	defer c.reconnectMu.Unlock()
+
+	// Re-check: another caller may have reconnected while we waited.
+	c.mu.Lock()
+	connected := c.conn != nil && !c.conn.IsClosed()
+	c.mu.Unlock()
+	if connected {
+		return nil
+	}
+
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	conn, err := cdp.DialBrowser(ctx, c.hostPort)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	if c.unsub != nil {
+		c.unsub()
+	}
+	c.conn = conn
+	c.browser = conn.Client("")
+	c.targetID = ""
+	c.sessionID = ""
+	c.dlg = nil
+	c.attached = map[string]string{}
+	c.mu.Unlock()
+
+	c.resetCapture()
+
+	// Re-adopt the first page target so page-scoped tools have a current tab.
+	if info, ok := c.firstPage(ctx); ok {
+		_ = c.selectTarget(ctx, info.TargetID)
+	}
+	log.Printf("cdp: reconnected to %s", c.hostPort)
+	return nil
+}
+
+// resetCapture clears buffered console/network/download state after a reconnect.
+// Old subscriptions live on the now-dead connection and stop firing on their
+// own; buffers are wiped so capture starts fresh.
+func (c *Core) resetCapture() {
+	c.consolesMu.Lock()
+	c.consoles = map[string][]string{}
+	c.consolesMu.Unlock()
+	c.networksMu.Lock()
+	c.networks = map[string][]*netRec{}
+	c.networksMu.Unlock()
+	c.downloadsMu.Lock()
+	c.downloads = nil
+	c.downloadUnsub = nil
+	c.downloadsMu.Unlock()
+	c.mu.Lock()
+	c.consoleUnsub = nil
+	c.networkUnsub = nil
+	c.mu.Unlock()
 }
 
 func (c *Core) firstPage(ctx context.Context) (*targetInfo, bool) {
@@ -206,21 +298,21 @@ type targetInfo struct {
 
 // RegisterCore wires the core pack: tabs, dialog, window.
 func RegisterCore(reg *mcptransport.Registry, core *Core) {
-	must(reg.Register(tabsTool, core.tabs))
-	must(reg.Register(dialogTool, core.handleDialog))
-	must(reg.Register(windowTool, core.window))
+	must(reg.Register(tabsTool, core.live(core.tabs)))
+	must(reg.Register(dialogTool, core.live(core.handleDialog)))
+	must(reg.Register(windowTool, core.live(core.window)))
 }
 
 // RegisterBrowse wires the browse pack: pointer, input, scroll, wait, read,
 // find. These operate on the current tab; tab switching lives in the core pack,
 // so browse without core still acts on whatever tab Core already adopted.
 func RegisterBrowse(reg *mcptransport.Registry, core *Core) {
-	must(reg.Register(pointerTool, core.pointer))
-	must(reg.Register(inputTool, core.input))
-	must(reg.Register(scrollTool, core.scroll))
-	must(reg.Register(waitTool, core.wait))
-	must(reg.Register(readTool, core.read))
-	must(reg.Register(findTool, core.find))
+	must(reg.Register(pointerTool, core.live(core.pointer)))
+	must(reg.Register(inputTool, core.live(core.input)))
+	must(reg.Register(scrollTool, core.live(core.scroll)))
+	must(reg.Register(waitTool, core.live(core.wait)))
+	must(reg.Register(readTool, core.live(core.read)))
+	must(reg.Register(findTool, core.live(core.find)))
 }
 
 // Register wires both core and browse — the full default surface (convenience

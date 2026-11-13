@@ -255,6 +255,6 @@ func (c *Core) downloadWait(ctx context.Context, guid, match string, timeout int
 
 // RegisterFiles wires the files pack (upload, download) into a registry.
 func RegisterFiles(reg *mcptransport.Registry, core *Core) {
-	must(reg.Register(uploadTool, core.upload))
-	must(reg.Register(downloadTool, core.download))
+	must(reg.Register(uploadTool, core.live(core.upload)))
+	must(reg.Register(downloadTool, core.live(core.download)))
 }

@@ -92,10 +92,10 @@ func (c *Core) evaluate(ctx context.Context, call *mcptransport.Call) (*mcptrans
 // RegisterDev wires the dev-pack tools (off by default in the spec) into a
 // registry. main gates this on config; tests and the current build enable it.
 func RegisterDev(reg *mcptransport.Registry, core *Core) {
-	must(reg.Register(evaluateTool, core.evaluate))
-	must(reg.Register(consoleTool, core.console))
-	must(reg.Register(networkTool, core.network))
-	must(reg.Register(emulateTool, core.emulate))
-	must(reg.Register(storageTool, core.storage))
-	must(reg.Register(cdpCallTool, core.cdpCall))
+	must(reg.Register(evaluateTool, core.live(core.evaluate)))
+	must(reg.Register(consoleTool, core.live(core.console)))
+	must(reg.Register(networkTool, core.live(core.network)))
+	must(reg.Register(emulateTool, core.live(core.emulate)))
+	must(reg.Register(storageTool, core.live(core.storage)))
+	must(reg.Register(cdpCallTool, core.live(core.cdpCall)))
 }

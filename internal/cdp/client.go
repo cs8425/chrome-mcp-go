@@ -254,6 +254,17 @@ func (c *Conn) Close() error {
 	return err
 }
 
+// IsClosed reports whether the connection has been closed (for example because
+// the browser went away). Callers use it to decide whether to (re)dial.
+func (c *Conn) IsClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Client is a typed CDP client bound to a session ("" = browser-level). All
 // generated protocol methods are defined on *Client.
 type Client struct {
