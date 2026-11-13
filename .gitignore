@@ -1,1 +1,2 @@
-chrome-mcp
+/cmd/chrome-mcp/chrome-mcp*
+config.json

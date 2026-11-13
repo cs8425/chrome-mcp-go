@@ -1,0 +1,17 @@
+{
+  "stdio": false,
+  "http": "127.0.0.1:8766",
+  "cdp": "127.0.0.1:9222",
+  "max_bytes": 0,
+  "file_root": "/path/to/workspace",
+  "browser_root": "/tmp/Downloads",
+  "browser_vroot": "/downloads",
+  "tool_prefix": "",
+  "packs": {
+    "core": true,
+    "browse": true,
+    "dev": true,
+    "files": true,
+    "perf": false
+  }
+}
