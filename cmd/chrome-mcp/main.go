@@ -36,7 +36,12 @@ func main() {
 	}
 
 	reg := mcptransport.NewRegistry(cfg.ToolPrefix) // "" = no name prefix
-	tools.Register(reg, core)                       // core + browse packs (split in P4 step 2)
+	if cfg.Packs.Core {
+		tools.RegisterCore(reg, core)
+	}
+	if cfg.Packs.Browse {
+		tools.RegisterBrowse(reg, core)
+	}
 	if cfg.Packs.Dev {
 		tools.RegisterDev(reg, core) // dev pack
 	}

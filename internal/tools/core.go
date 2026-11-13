@@ -204,17 +204,30 @@ type targetInfo struct {
 	URL      string `json:"url"`
 }
 
-// Register wires the enabled tool packs into a registry (core + browse).
-func Register(reg *mcptransport.Registry, core *Core) {
+// RegisterCore wires the core pack: tabs, dialog, window.
+func RegisterCore(reg *mcptransport.Registry, core *Core) {
 	must(reg.Register(tabsTool, core.tabs))
 	must(reg.Register(dialogTool, core.handleDialog))
 	must(reg.Register(windowTool, core.window))
+}
+
+// RegisterBrowse wires the browse pack: pointer, input, scroll, wait, read,
+// find. These operate on the current tab; tab switching lives in the core pack,
+// so browse without core still acts on whatever tab Core already adopted.
+func RegisterBrowse(reg *mcptransport.Registry, core *Core) {
 	must(reg.Register(pointerTool, core.pointer))
 	must(reg.Register(inputTool, core.input))
 	must(reg.Register(scrollTool, core.scroll))
 	must(reg.Register(waitTool, core.wait))
 	must(reg.Register(readTool, core.read))
 	must(reg.Register(findTool, core.find))
+}
+
+// Register wires both core and browse — the full default surface (convenience
+// for callers/tests that do not toggle packs).
+func Register(reg *mcptransport.Registry, core *Core) {
+	RegisterCore(reg, core)
+	RegisterBrowse(reg, core)
 }
 
 func must(err error) {
