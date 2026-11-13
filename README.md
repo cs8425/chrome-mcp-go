@@ -36,7 +36,7 @@ Grouped into packs that can be enabled/disabled independently (see
 | pack | default | tools |
 |---|---|---|
 | core | on | `tabs`, `dialog`, `window` |
-| browse | on | `pointer`, `input`, `scroll`, `wait`, `read`, `find` |
+| browse | on | `pointer`, `input`, `scroll`, `wait`, `read`, `find`, `interact` |
 | dev | on | `evaluate`, `console`, `emulate`, `network`, `storage`, `cdp_call` |
 | files | on | `upload`, `download` |
 | perf | off | *(planned: trace / heapsnapshot)* |

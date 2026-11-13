@@ -313,6 +313,7 @@ func RegisterBrowse(reg *mcptransport.Registry, core *Core) {
 	must(reg.Register(waitTool, core.live(core.wait)))
 	must(reg.Register(readTool, core.live(core.read)))
 	must(reg.Register(findTool, core.live(core.find)))
+	must(reg.Register(interactTool, core.live(core.interact)))
 }
 
 // Register wires both core and browse — the full default surface (convenience
