@@ -34,8 +34,10 @@ type settings struct {
 	BrowserRoot  string
 	BrowserVRoot string
 	ToolPrefix   string
-	// CDPCallTimeoutSec caps one CDP round trip; RequestTimeoutSec caps a whole
-	// MCP request (tool call). Independent; seconds; 0 = disabled.
+	// CDPCallTimeoutSec caps one CDP round trip (default 60); RequestTimeoutSec
+	// caps a whole MCP request (default 0 = off, so long tools like evaluate can
+	// run; the per-call cap + each tool's own timeout provide the real bounds).
+	// Independent; seconds; 0 = disabled.
 	CDPCallTimeoutSec int
 	RequestTimeoutSec int
 	// ActivateOnSelect: when true, tabs select/new raise the window to the
@@ -49,7 +51,7 @@ func defaultSettings() settings {
 		HTTP:              "127.0.0.1:8766",
 		CDP:               "127.0.0.1:9222",
 		CDPCallTimeoutSec: 60,
-		RequestTimeoutSec: 60,
+		RequestTimeoutSec: 0, // whole-request cap off by default; per-call cap + tool self-bounds govern
 		BrowserVRoot:      "/",
 		Packs:             Packs{Core: true, Browse: true, Dev: true, Files: true},
 	}
@@ -190,7 +192,7 @@ func loadConfig() settings {
 	browserRoot := flag.String("browser-root", "", "path the BROWSER sees for the shared dir (Chrome in a container, e.g. /tmp/Downloads)")
 	browserVRoot := flag.String("browser-vroot", "", "virtual dir of the file box that --browser-root maps to (e.g. /downloads)")
 	cdpCallTimeout := flag.Int("cdp-call-timeout", 60, "per-CDP-call deadline in seconds (0 = no per-call deadline)")
-	requestTimeout := flag.Int("request-timeout", 60, "per-MCP-request deadline in seconds (0 = no request deadline)")
+	requestTimeout := flag.Int("request-timeout", 0, "per-MCP-request deadline in seconds (0 = off, the default: long tools like evaluate need room; rely on --cdp-call-timeout + per-tool timeouts)")
 	activateOnSelect := flag.Bool("activate-on-select", false, "raise the window to the foreground on tabs select/new (default false: never steal OS focus)")
 	flag.Parse()
 

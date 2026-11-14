@@ -115,10 +115,14 @@ func version(ctx context.Context, hostPort string) (*versionInfo, error) {
 
 // call sends a JSON-RPC request and waits for its response (routed by id).
 func (c *Conn) call(ctx context.Context, sessionID, method string, params, result any) error {
-	// Bound this round-trip: cap at callTimeout unless the caller already set an
-	// equal-or-shorter deadline. Caps both the ws write and the response wait.
+	// Bound this round-trip with the per-call default, but ONLY when the caller
+	// supplied no deadline of its own. A caller that explicitly chose a budget
+	// (e.g. evaluate's timeout param, or a heap snapshot) is respected verbatim —
+	// we must NOT shrink it, or long tools could never run past the per-hop cap.
+	// With a tighter caller deadline the caller governs; with none, this default
+	// protects every hop. Caps both the ws write and the response wait.
 	if d := time.Duration(c.callTimeout.Load()); d > 0 {
-		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > d {
+		if _, ok := ctx.Deadline(); !ok {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, d)
 			defer cancel()

@@ -4,7 +4,7 @@
   "cdp": "127.0.0.1:9222",
   "max_bytes": 0,
   "cdp_call_timeout_seconds": 60,
-  "request_timeout_seconds": 60,
+  "request_timeout_seconds": 0,
   "activate_on_select": false,
   "file_root": "/path/to/workspace",
   "browser_root": "/tmp/Downloads",

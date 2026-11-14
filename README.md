@@ -113,7 +113,7 @@ The config file is located by `-config <path>`, else `$CDPMCP_CONFIG`, else
 | `-browser-vroot` | `browser_vroot` | `CDPMCP_BROWSER_VROOT` | `/` | virtual dir `browser_root` maps to |
 | — | `tool_prefix` | `CDPMCP_TOOL_PREFIX` | `""` | prefix added to every tool name |
 | `-cdp-call-timeout` | `cdp_call_timeout_seconds` | `CDPMCP_CDP_CALL_TIMEOUT` | 60 | per-CDP-call deadline seconds (0 = off) |
-| `-request-timeout` | `request_timeout_seconds` | `CDPMCP_REQUEST_TIMEOUT` | 60 | per-MCP-request deadline seconds (0 = off) |
+| `-request-timeout` | `request_timeout_seconds` | `CDPMCP_REQUEST_TIMEOUT` | 0 (off) | whole-request deadline seconds; **off by default** so long tools (`evaluate`) can run — rely on `-cdp-call-timeout` + per-tool timeouts |
 | `-activate-on-select` | `activate_on_select` | `CDPMCP_ACTIVATE_ON_SELECT` | false | raise window to foreground on `tabs` select/new (startup/reconnect/auto-select never steal focus; `bringToFront` overrides per call) |
 | — | `packs.*` | `CDPMCP_PACK_{CORE,BROWSE,DEV,FILES,PERF}` | see table | enable/disable a pack |
 

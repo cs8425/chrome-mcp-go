@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -82,6 +83,61 @@ func isRequest(line string) bool {
 	}
 	_ = json.Unmarshal([]byte(line), &m)
 	return len(m.ID) > 0
+}
+
+// TestStdioTimeoutNotSwallowed is the regression for the permanent hang: when
+// the server's RequestTimeout fires, the (late) response MUST still be written
+// to the client. The old code dropped it under `if ctx.Err() != nil`, leaving
+// the client waiting forever with no goroutine left in the server. Here the
+// handler sleeps past the cap and returns normally, so at reply time
+// ctx.Err()==DeadlineExceeded and the response must still be delivered.
+func TestStdioTimeoutNotSwallowed(t *testing.T) {
+	reg := NewRegistry("test_")
+	if err := reg.Register(&Tool{
+		Name:        "slow",
+		Description: "sleeps past the request timeout then returns",
+		InputSchema: Schema{Type: TypeObject},
+	}, func(ctx context.Context, c *Call) (*ToolResult, error) {
+		time.Sleep(150 * time.Millisecond) // ignores ctx: finishes after the cap
+		return ResultText("late result"), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Name: "test", Version: "0.0.1", Reg: reg,
+		Origin: map[string]bool{"*": true}, RequestTimeout: 50 * time.Millisecond}
+
+	pr, pw := io.Pipe()
+	qr, qw := io.Pipe()
+	ss := NewStdioServer(srv)
+	ss.SetIO(pr, qw)
+	go ss.Serve()
+
+	req := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"test_slow","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"` + VersionModern + `"}}}`
+	if _, err := pw.Write([]byte(req + "\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := make(chan Response, 1)
+	go func() {
+		scan := bufio.NewScanner(qr)
+		if scan.Scan() {
+			var r Response
+			_ = json.Unmarshal(scan.Bytes(), &r)
+			got <- r
+		}
+	}()
+	select {
+	case r := <-got:
+		if string(r.ID) != "7" {
+			t.Errorf("response id = %s, want 7", r.ID)
+		}
+		if r.Error != nil || r.Result == nil {
+			t.Errorf("want a delivered result, got err=%v result=%v", r.Error, r.Result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout response was swallowed: the client would hang forever")
+	}
+	pw.Close()
 }
 
 func TestStdioLegacy(t *testing.T) {

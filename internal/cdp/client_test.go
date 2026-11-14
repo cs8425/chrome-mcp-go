@@ -78,6 +78,10 @@ func startFakeCDP(t *testing.T) (hostPort string) {
 			case "Slow.never":
 				// Never respond: exercises the client-side per-call timeout.
 				continue
+			case "Slow.returns":
+				// Respond after ~300ms: a call that is slow but does finish.
+				time.Sleep(300 * time.Millisecond)
+				out["result"] = map[string]any{"ok": true}
 			default:
 				out["error"] = map[string]any{"code": -32601, "message": "not found: " + req.Method}
 			}
@@ -222,5 +226,38 @@ func TestCallTimeout(t *testing.T) {
 	}
 	if el := time.Since(start); el > 3*time.Second {
 		t.Errorf("caller deadline ignored: waited %v", el)
+	}
+}
+
+// TestCallTimeoutRespectsCallerBudget verifies the per-hop semantics: the
+// per-call default applies ONLY when the caller set no deadline. An explicit
+// LONGER caller deadline must be honoured (A must not shrink it), so long tools
+// like evaluate can outlive the per-hop cap. With no caller deadline, A caps it.
+func TestCallTimeoutRespectsCallerBudget(t *testing.T) {
+	hostPort := startFakeCDP(t)
+	ctx := context.Background()
+	conn, err := DialBrowser(ctx, hostPort)
+	if err != nil {
+		t.Fatalf("DialBrowser: %v", err)
+	}
+	defer conn.Close()
+
+	var out map[string]any
+
+	// Caller grants 2s, per-hop default is 100ms: the ~300ms call must SUCCEED.
+	conn.SetCallTimeout(100 * time.Millisecond)
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := conn.Client("").RawCall(cctx, "Slow.returns", nil, &out); err != nil {
+		t.Errorf("caller 2s vs A=100ms: got %v, want success (A must not shrink an explicit deadline)", err)
+	}
+
+	// No caller deadline: A's per-hop cap governs and must cut the same call.
+	start := time.Now()
+	if err := conn.Client("").RawCall(ctx, "Slow.returns", nil, &out); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("no caller deadline: got %v, want DeadlineExceeded from per-call cap", err)
+	}
+	if el := time.Since(start); el < 50*time.Millisecond || el > 3*time.Second {
+		t.Errorf("per-call cap fired after %v, want ~100ms", el)
 	}
 }
