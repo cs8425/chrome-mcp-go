@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"mcptransport"
 
@@ -157,6 +158,76 @@ func firstText(t *testing.T, res *mcptransport.ToolResult) string {
 		t.Fatal("empty result content")
 	}
 	return res.Content[0].Text
+}
+
+// TestTabsStructuralConcurrency hammers concurrent structural tabs ops — new /
+// select / close, including close of a nonexistent id and selects of different
+// tabs (the shape that previously wedged the client). With targetMu they must
+// all complete (no deadlock), none may panic, and the Core must be left usable.
+// Under -race this also guards the shared current/attached/capture bookkeeping.
+func TestTabsStructuralConcurrency(t *testing.T) {
+	ctx := context.Background()
+	core, err := NewCore(ctx, startFakeCDP(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := mcptransport.NewRegistry("")
+	Register(reg, core)
+
+	const n = 24
+	ids := []string{"t1", "t3", "ghost"} // real page, real page, never opened
+	results := make([]*mcptransport.ToolResult, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var args string
+			switch i % 3 {
+			case 0:
+				args = `{"action":"new","url":"http://x"}`
+			case 1:
+				args = `{"action":"select","targetId":"` + ids[i%len(ids)] + `"}`
+			default:
+				args = `{"action":"close","targetId":"` + ids[i%len(ids)] + `"}`
+			}
+			res, derr := reg.Dispatch(ctx, &mcptransport.Call{Name: "tabs", Arguments: json.RawMessage(args)})
+			if derr != nil {
+				t.Errorf("tabs dispatch returned err: %v", derr)
+				return
+			}
+			results[i] = res
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("concurrent structural tabs ops deadlocked (targetMu regression?)")
+	}
+
+	// Registry recovers handler panics into an isError result containing
+	// "panicked"; none of the concurrent ops may have panicked.
+	for i, r := range results {
+		if r == nil {
+			t.Errorf("op %d produced no result", i)
+			continue
+		}
+		txt := ""
+		if len(r.Content) > 0 {
+			txt = r.Content[0].Text
+		}
+		if strings.Contains(txt, "panicked") {
+			t.Errorf("op %d panicked: %s", i, txt)
+		}
+	}
+
+	// The Core must still be usable afterwards.
+	if txt := firstText(t, callTool(t, ctx, reg, "tabs", `{"action":"list"}`)); !strings.Contains(txt, "t1") {
+		t.Errorf("Core unusable after concurrent structural ops: %s", txt)
+	}
 }
 
 func TestCoreAdoptsFirstTab(t *testing.T) {
