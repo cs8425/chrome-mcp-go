@@ -38,6 +38,7 @@ type Registry struct {
 	prefix   string
 	tools    []*Tool
 	handlers map[string]Handler
+	schemas  map[string]Schema // by full name; used to coerce string/number booleans
 }
 
 // NewRegistry returns a Registry that prefixes every registered tool name
@@ -47,6 +48,7 @@ func NewRegistry(prefix string) *Registry {
 		prefix:   prefix,
 		tools:    make([]*Tool, 0, 16),
 		handlers: make(map[string]Handler),
+		schemas:  make(map[string]Schema),
 	}
 }
 
@@ -62,6 +64,7 @@ func (r *Registry) Register(t *Tool, h Handler) error {
 	t.Name = name
 	r.tools = append(r.tools, t)
 	r.handlers[name] = h
+	r.schemas[name] = t.InputSchema
 	return nil
 }
 
@@ -75,6 +78,13 @@ func (r *Registry) Dispatch(ctx context.Context, call *Call) (res *ToolResult, e
 	h, ok := r.handlers[call.Name]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnknown, call.Name)
+	}
+	// Silently normalize string/number values that the schema declares as
+	// boolean (e.g. "true"/"1"/"T") so typed handlers using bool/*bool do not
+	// choke. Best-effort: any issue leaves Arguments unchanged. Covers both
+	// transports since they funnel through this single dispatch point.
+	if schema, ok := r.schemas[call.Name]; ok && len(call.Arguments) > 0 {
+		call.Arguments = coerceBooleans(call.Arguments, &schema)
 	}
 	defer func() {
 		if p := recover(); p != nil {
