@@ -1,7 +1,7 @@
 package tools
 
 // The dev pack (off by default in the spec): powerful debugging tools. P3a
-// ships evaluate; console/network/emulate/storage/cdp_call follow.
+// ships evaluate; console/network/emulate/storage/raw_call follow.
 
 import (
 	"context"

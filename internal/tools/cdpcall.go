@@ -1,6 +1,6 @@
 package tools
 
-// The dev pack (cont.): cdp_call. The escape hatch — send any raw Chrome
+// The dev pack (cont.): raw_call. The escape hatch — send any raw Chrome
 // DevTools Protocol method. On by default in the dev pack; a policy can drop
 // the whole dev pack if this is too permissive.
 
@@ -12,7 +12,7 @@ import (
 )
 
 var cdpCallTool = &mcptransport.Tool{
-	Name:        "cdp_call",
+	Name:        "raw_call",
 	Description: "Escape hatch: call any raw Chrome DevTools Protocol method. params is the method's JSON arguments object (optional). Set browser=true to send at the browser endpoint instead of the current tab's session. Returns the raw result JSON (truncated).",
 	InputSchema: mcptransport.Schema{
 		Type: mcptransport.TypeObject,
@@ -35,7 +35,7 @@ func (c *Core) cdpCall(ctx context.Context, call *mcptransport.Call) (*mcptransp
 		return mcptransport.ResultError("bad arguments: " + err.Error()), nil
 	}
 	if a.Method == "" {
-		return mcptransport.ResultError("cdp_call needs method"), nil
+		return mcptransport.ResultError("raw_call needs method"), nil
 	}
 	var params any
 	if len(a.Params) > 0 {

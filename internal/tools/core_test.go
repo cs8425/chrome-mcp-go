@@ -533,11 +533,11 @@ func TestStorage(t *testing.T) {
 
 func TestCDPCall(t *testing.T) {
 	reg, ctx := newRegCore(t)
-	if txt := firstText(t, callTool(t, ctx, reg, "cdp_call", `{"method":"DOM.getDocument"}`)); !strings.Contains(txt, "nodeId") {
-		t.Errorf("cdp_call = %s", txt)
+	if txt := firstText(t, callTool(t, ctx, reg, "raw_call", `{"method":"DOM.getDocument"}`)); !strings.Contains(txt, "nodeId") {
+		t.Errorf("raw_call = %s", txt)
 	}
-	if res := callTool(t, ctx, reg, "cdp_call", `{}`); !res.IsError {
-		t.Errorf("cdp_call without method should error")
+	if res := callTool(t, ctx, reg, "raw_call", `{}`); !res.IsError {
+		t.Errorf("raw_call without method should error")
 	}
 }
 
