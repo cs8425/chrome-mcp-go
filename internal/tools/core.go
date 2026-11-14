@@ -411,13 +411,24 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if url == "" {
 			url = "about:blank"
 		}
+		wantForeground := a.BringToFront || c.activateOnSelect
+		params := map[string]any{"url": url}
+		if !wantForeground {
+			// Target.createTarget focuses the new tab and raises the window unless
+			// told otherwise; focus:false opens the tab (still the active tab in
+			// its window, so it renders and stays screenshotable) while leaving the
+			// browser window's OS focus exactly where it was. Foreground is requested
+			// explicitly via bringToFront / activate_on_select, which omit focus:false
+			// and take the default (raise) path.
+			params["focus"] = false
+		}
 		var res struct {
 			TargetID string `json:"targetId"`
 		}
-		if err := c.browser.Load().RawCall(ctx, "Target.createTarget", map[string]string{"url": url}, &res); err != nil {
+		if err := c.browser.Load().RawCall(ctx, "Target.createTarget", params, &res); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
-		_ = c.selectTarget(ctx, res.TargetID, a.BringToFront || c.activateOnSelect)
+		_ = c.selectTarget(ctx, res.TargetID, wantForeground)
 		return jsonResult(map[string]string{"targetId": res.TargetID})
 	case "close":
 		c.targetMu.Lock()
