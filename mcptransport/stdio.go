@@ -123,8 +123,15 @@ func (s *StdioServer) handleLine(line []byte, bw *bufio.Writer) {
 		defer s.untrack(msg.ID)
 		defer s.wg.Done()
 		resp := s.dispatchRequest(ctx, msg)
-		if ctx.Err() != nil {
-			return // cancelled: no response
+		// Stay silent ONLY when the client explicitly cancelled this request
+		// (notifications/cancelled -> context.Canceled); MCP allows dropping the
+		// reply there. When OUR RequestTimeout fires it is context.DeadlineExceeded
+		// and the client is still waiting for a result — discarding that response
+		// was the bug that turned a timeout into a permanent hang (no goroutine
+		// left behind, nothing ever written to stdout). So always reply unless the
+		// client told us to stop.
+		if ctx.Err() == context.Canceled {
+			return
 		}
 		s.writeMessage(bw, resp)
 	}()
