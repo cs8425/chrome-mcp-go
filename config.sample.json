@@ -5,6 +5,7 @@
   "max_bytes": 0,
   "cdp_call_timeout_seconds": 60,
   "request_timeout_seconds": 60,
+  "activate_on_select": false,
   "file_root": "/path/to/workspace",
   "browser_root": "/tmp/Downloads",
   "browser_vroot": "/downloads",

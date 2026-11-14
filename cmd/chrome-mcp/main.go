@@ -38,8 +38,8 @@ func main() {
 			}
 		}
 	}()
-	log.Printf("chrome-mcp starting: cdp=%s cdp_call_timeout=%ds request_timeout=%ds (0=off)",
-		cfg.CDP, cfg.CDPCallTimeoutSec, cfg.RequestTimeoutSec)
+	log.Printf("chrome-mcp starting: cdp=%s cdp_call_timeout=%ds request_timeout=%ds (0=off) activate_on_select=%v",
+		cfg.CDP, cfg.CDPCallTimeoutSec, cfg.RequestTimeoutSec, cfg.ActivateOnSelect)
 
 	ctx := context.Background()
 	core, err := tools.NewCore(ctx, cfg.CDP)
@@ -47,6 +47,7 @@ func main() {
 		log.Fatalf("connect CDP at %s: %v", cfg.CDP, err)
 	}
 	core.SetCDPCallTimeout(time.Duration(cfg.CDPCallTimeoutSec) * time.Second)
+	core.SetActivateOnSelect(cfg.ActivateOnSelect)
 	if cfg.MaxBytes > 0 {
 		core.SetMaxBytes(cfg.MaxBytes)
 	}

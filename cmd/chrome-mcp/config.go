@@ -38,7 +38,10 @@ type settings struct {
 	// MCP request (tool call). Independent; seconds; 0 = disabled.
 	CDPCallTimeoutSec int
 	RequestTimeoutSec int
-	Packs             Packs
+	// ActivateOnSelect: when true, tabs select/new raise the window to the
+	// foreground (Target.activateTarget). Default false: never steal OS focus.
+	ActivateOnSelect bool
+	Packs            Packs
 }
 
 func defaultSettings() settings {
@@ -65,6 +68,7 @@ type fileConfig struct {
 	ToolPrefix        *string    `json:"tool_prefix"`
 	CDPCallTimeoutSec *int       `json:"cdp_call_timeout_seconds"`
 	RequestTimeoutSec *int       `json:"request_timeout_seconds"`
+	ActivateOnSelect  *bool      `json:"activate_on_select"`
 	Packs             *packsFile `json:"packs"`
 }
 
@@ -106,6 +110,9 @@ func (s *settings) applyFileConfig(fc *fileConfig) {
 	}
 	if fc.RequestTimeoutSec != nil {
 		s.RequestTimeoutSec = *fc.RequestTimeoutSec
+	}
+	if fc.ActivateOnSelect != nil {
+		s.ActivateOnSelect = *fc.ActivateOnSelect
 	}
 	if p := fc.Packs; p != nil {
 		if p.Core != nil {
@@ -152,6 +159,9 @@ func (s *settings) applyEnv(getenv func(string) string) {
 			s.RequestTimeoutSec = n
 		}
 	}
+	if v := getenv("CDPMCP_ACTIVATE_ON_SELECT"); v != "" {
+		s.ActivateOnSelect = parseBool(v)
+	}
 	if v := getenv("CDPMCP_PACK_CORE"); v != "" {
 		s.Packs.Core = parseBool(v)
 	}
@@ -181,6 +191,7 @@ func loadConfig() settings {
 	browserVRoot := flag.String("browser-vroot", "", "virtual dir of the file box that --browser-root maps to (e.g. /downloads)")
 	cdpCallTimeout := flag.Int("cdp-call-timeout", 60, "per-CDP-call deadline in seconds (0 = no per-call deadline)")
 	requestTimeout := flag.Int("request-timeout", 60, "per-MCP-request deadline in seconds (0 = no request deadline)")
+	activateOnSelect := flag.Bool("activate-on-select", false, "raise the window to the foreground on tabs select/new (default false: never steal OS focus)")
 	flag.Parse()
 
 	// Only flags the user actually set override lower layers.
@@ -238,6 +249,9 @@ func loadConfig() settings {
 	}
 	if set["request-timeout"] {
 		cfg.RequestTimeoutSec = *requestTimeout
+	}
+	if set["activate-on-select"] {
+		cfg.ActivateOnSelect = *activateOnSelect
 	}
 	return cfg
 }

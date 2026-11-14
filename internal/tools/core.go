@@ -25,15 +25,16 @@ type Core struct {
 	conn     atomic.Pointer[cdp.Conn]
 	browser  atomic.Pointer[cdp.Client] // session "" (browser-level: Target.*)
 
-	mu          sync.Mutex
-	reconnectMu sync.Mutex   // serialises (re)dial so concurrent calls reconnect once
-	callTimeout atomic.Int64 // per-CDP-call deadline in ns (0 = none); applied to every conn
-	targetMu    sync.Mutex   // serialises structural tab ops (close/select/new) so they cannot interleave
-	targetID    string       // current tab id
-	sessionID   string       // current attached session
-	dlg         *dialogState
-	unsub       func()
-	attached    map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
+	mu               sync.Mutex
+	reconnectMu      sync.Mutex   // serialises (re)dial so concurrent calls reconnect once
+	callTimeout      atomic.Int64 // per-CDP-call deadline in ns (0 = none); applied to every conn
+	targetMu         sync.Mutex   // serialises structural tab ops (close/select/new) so they cannot interleave
+	activateOnSelect bool         // when true, select/new raise the window (Target.activateTarget); default false = no focus steal
+	targetID         string       // current tab id
+	sessionID        string       // current attached session
+	dlg              *dialogState
+	unsub            func()
+	attached         map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
 
 	consoles     map[string][]string // targetID -> buffered console/exception/log lines
 	consolesMu   sync.Mutex
@@ -68,9 +69,9 @@ func NewCore(ctx context.Context, hostPort string) (*Core, error) {
 	c := &Core{hostPort: hostPort, attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
 	c.conn.Store(conn)
 	c.browser.Store(conn.Client(""))
-	// Adopt the first page target, if any.
+	// Adopt the first page target, if any (never raise the window on startup).
 	if info, ok := c.firstPage(ctx); ok {
-		_ = c.selectTarget(ctx, info.TargetID)
+		_ = c.selectTarget(ctx, info.TargetID, false)
 	}
 	return c, nil
 }
@@ -163,9 +164,10 @@ func (c *Core) reconnect(ctx context.Context) error {
 
 	c.resetCapture()
 
-	// Re-adopt the first page target so page-scoped tools have a current tab.
+	// Re-adopt the first page target so page-scoped tools have a current tab
+	// (do not raise the window: reconnecting must not steal focus).
 	if info, ok := c.firstPage(ctx); ok {
-		_ = c.selectTarget(ctx, info.TargetID)
+		_ = c.selectTarget(ctx, info.TargetID, false)
 	}
 	log.Printf("cdp: reconnected to %s", c.hostPort)
 	return nil
@@ -223,10 +225,20 @@ func (c *Core) listTargets(ctx context.Context) ([]targetInfo, error) {
 	return pages, nil
 }
 
-// selectTarget activates and attaches to a target, making it current.
-func (c *Core) selectTarget(ctx context.Context, targetID string) error {
-	if err := c.browser.Load().RawCall(ctx, "Target.activateTarget", map[string]string{"targetId": targetID}, nil); err != nil {
-		return err
+// SetActivateOnSelect controls whether select/new raise the browser window to
+// the foreground (Target.activateTarget). Default false: attaching in the
+// background never steals the user's OS focus.
+func (c *Core) SetActivateOnSelect(on bool) { c.activateOnSelect = on }
+
+// selectTarget attaches to a target, making it current. Attaching alone does
+// NOT raise the OS window, so it never steals focus. Pass activate=true only
+// when the caller explicitly wants the tab brought to the foreground
+// (Target.activateTarget raises the window and focuses it).
+func (c *Core) selectTarget(ctx context.Context, targetID string, activate bool) error {
+	if activate {
+		if err := c.browser.Load().RawCall(ctx, "Target.activateTarget", map[string]string{"targetId": targetID}, nil); err != nil {
+			return err
+		}
 	}
 	var res struct {
 		SessionID string `json:"sessionId"`
@@ -349,7 +361,7 @@ func must(err error) {
 
 var tabsTool = &mcptransport.Tool{
 	Name:        "tabs",
-	Description: "Manage browser tabs: list, new, close, select, nav.",
+	Description: "Manage browser tabs: list, new, close, select, nav. select/new attach to a tab in the background and do NOT raise it (no OS focus steal); pass bringToFront=true ONLY when the user explicitly wants a tab brought forward — in a HEADED browser that raises the Chrome window and steals the user's focus, so avoid it otherwise.",
 	InputSchema: mcptransport.Schema{
 		Type: mcptransport.TypeObject,
 		Properties: map[string]mcptransport.Schema{
@@ -364,6 +376,7 @@ var tabsTool = &mcptransport.Tool{
 			"height":            {Type: mcptransport.TypeInteger, Description: "viewport: layout height in CSS px"},
 			"deviceScaleFactor": {Type: mcptransport.TypeNumber, Description: "viewport: device pixel ratio (default 1)"},
 			"mobile":            {Type: mcptransport.TypeBoolean, Description: "viewport: emulate mobile"},
+			"bringToFront":      {Type: mcptransport.TypeBoolean, Description: "new/select: also raise the window to the foreground (default false). In a HEADED browser this raises the Chrome window and steals the user's OS focus — set true ONLY when the user explicitly asks to bring the tab to front."},
 		},
 		Required: []string{"action"},
 	},
@@ -378,6 +391,7 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		Height            int64   `json:"height"`
 		DeviceScaleFactor float64 `json:"deviceScaleFactor"`
 		Mobile            bool    `json:"mobile"`
+		BringToFront      bool    `json:"bringToFront"`
 	}
 	if err := json.Unmarshal(call.Arguments, &a); err != nil {
 		return mcptransport.ResultError("bad arguments: " + err.Error()), nil
@@ -403,7 +417,7 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if err := c.browser.Load().RawCall(ctx, "Target.createTarget", map[string]string{"url": url}, &res); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
-		_ = c.selectTarget(ctx, res.TargetID)
+		_ = c.selectTarget(ctx, res.TargetID, a.BringToFront || c.activateOnSelect)
 		return jsonResult(map[string]string{"targetId": res.TargetID})
 	case "close":
 		c.targetMu.Lock()
@@ -432,7 +446,7 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		c.mu.Unlock()
 		if wasCurrent {
 			if info, ok := c.firstPage(ctx); ok {
-				_ = c.selectTarget(ctx, info.TargetID)
+				_ = c.selectTarget(ctx, info.TargetID, false)
 			}
 		}
 		return mcptransport.ResultText("closed " + a.TargetID), nil
@@ -442,7 +456,7 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if a.TargetID == "" {
 			return mcptransport.ResultError("select needs targetId"), nil
 		}
-		if err := c.selectTarget(ctx, a.TargetID); err != nil {
+		if err := c.selectTarget(ctx, a.TargetID, a.BringToFront || c.activateOnSelect); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
 		return mcptransport.ResultText("selected " + a.TargetID), nil
@@ -551,7 +565,7 @@ func (c *Core) clearDialog() {
 
 var windowTool = &mcptransport.Tool{
 	Name:        "window",
-	Description: "Move or resize the real OS browser window (Browser domain). info reads current bounds; set moves/resizes or changes window state.",
+	Description: "Move or resize the real OS browser window (Browser domain). info reads current bounds (safe); set moves/resizes/changes window state and acts on the REAL window — in a HEADED browser this raises/alters the window the user is looking at, so avoid set unless the user requests window changes (prefer tabs action=viewport for rendering size).",
 	InputSchema: mcptransport.Schema{
 		Type: mcptransport.TypeObject,
 		Properties: map[string]mcptransport.Schema{
