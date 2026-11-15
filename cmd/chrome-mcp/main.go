@@ -9,9 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 	"time"
 
 	"chrome-mcp/internal/tools"
@@ -25,19 +22,9 @@ func main() {
 
 	log.SetOutput(os.Stderr)
 
-	// Diagnostics: SIGUSR1 dumps every goroutine stack to stderr WITHOUT killing
-	// the process. Use it to pinpoint exactly where a hung tool call is parked
-	// (a mutex, a channel, or a CDP select) when the call-timeouts don't fire.
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGUSR1)
-		for range sigCh {
-			buf := make([]byte, 1<<20)
-			if n := runtime.Stack(buf, true); n > 0 {
-				log.Printf("goroutine dump (SIGUSR1):\n%s", buf[:n])
-			}
-		}
-	}()
+	// Diagnostics: on POSIX, SIGUSR1 dumps every goroutine stack to stderr
+	// (see signals_unix.go); no-op on Windows (signals_windows.go).
+	startDiagnostics()
 	log.Printf("chrome-mcp starting: cdp=%s cdp_call_timeout=%ds request_timeout=%ds (0=off) activate_on_select=%v",
 		cfg.CDP, cfg.CDPCallTimeoutSec, cfg.RequestTimeoutSec, cfg.ActivateOnSelect)
 
