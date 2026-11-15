@@ -125,6 +125,20 @@ func Open(dir, browserDir, browserVRoot string) (Box, error) {
 	if err != nil {
 		return nil, err
 	}
+	// browserDir is handed verbatim to the browser (Browser.setDownloadBehavior
+	// downloadPath, DOM.setFileInputFiles). It must be an ABSOLUTE path that
+	// EXISTS: a relative value is resolved against Chrome's own working directory
+	// (not ours) and a missing directory makes Chrome start the download then
+	// report state="canceled". Absolutize against our cwd and create it. The
+	// browser shares this host/filesystem in the single-host deployment (the
+	// remote-container case passes an already-absolute path, so this is a no-op).
+	browserDir = strings.TrimSpace(browserDir)
+	if browserDir != "" {
+		if babs, berr := filepath.Abs(browserDir); berr == nil {
+			browserDir = babs
+			_ = os.MkdirAll(browserDir, 0o755)
+		}
+	}
 	return &local{root: r, dir: abs, browserDir: browserDir, browserVRoot: browserVRoot}, nil
 }
 
