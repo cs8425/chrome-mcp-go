@@ -1,2 +1,4 @@
 /cmd/chrome-mcp/chrome-mcp*
 config.json
+/dist/
+/bin/

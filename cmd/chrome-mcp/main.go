@@ -15,7 +15,7 @@ import (
 	"mcptransport"
 )
 
-const serverVersion = "0.1.0"
+var serverVersion = "0.1.0" // stamped at link time via -ldflags "-X main.serverVersion=<tag>"
 
 func main() {
 	cfg := loadConfig()
