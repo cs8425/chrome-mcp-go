@@ -452,6 +452,7 @@ func newRegCoreWithBox(t *testing.T, dir string) (*mcptransport.Registry, contex
 	if err := core.SetFileRoot(dir, "", ""); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(core.Close) // release the file box handle (Windows TempDir cleanup)
 	reg := mcptransport.NewRegistry("")
 	Register(reg, core)
 	RegisterDev(reg, core)

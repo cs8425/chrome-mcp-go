@@ -100,6 +100,18 @@ func (c *Core) fileBox() filebox.Box {
 	return c.files
 }
 
+// Close releases resources held by the core: the file box handle and the browser
+// connection. On Windows an open file-box handle keeps the jailed directory from
+// being deleted, so owners (and tests running over a t.TempDir) must Close it.
+func (c *Core) Close() {
+	if b := c.fileBox(); b != nil {
+		_ = b.Close()
+	}
+	if cc := c.conn.Load(); cc != nil && !cc.IsClosed() {
+		_ = cc.Close()
+	}
+}
+
 // live wraps a tool handler so the browser connection is verified before the
 // handler runs. If Chrome has restarted (the DevTools WebSocket died) the
 // connection is transparently re-dialed and the first page target re-adopted,

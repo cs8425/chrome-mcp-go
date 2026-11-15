@@ -12,6 +12,7 @@ func mustOpenIn(t *testing.T, dir string) Box {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = box.Close() }) // Windows: the open handle blocks TempDir removal
 	return box
 }
 
@@ -94,6 +95,7 @@ func TestBrowserPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = box.Close() })
 	if box.BrowserVRoot() != "/downloads" {
 		t.Errorf("BrowserVRoot=%q", box.BrowserVRoot())
 	}
@@ -112,6 +114,7 @@ func TestBrowserPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = box2.Close() })
 	if got, _ := box2.BrowserPath("/x/y"); got != "/shared/x/y" {
 		t.Errorf("BrowserPath=%q want /shared/x/y", got)
 	}

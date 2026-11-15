@@ -10,6 +10,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -254,6 +255,19 @@ func loadConfig() settings {
 	}
 	if set["activate-on-select"] {
 		cfg.ActivateOnSelect = *activateOnSelect
+	}
+
+	// A relative --browser-root is meaningless to Chrome: it resolves the path
+	// against Chrome's own working directory (not ours), so downloads land where
+	// the server cannot read them — a download that starts then reports
+	// "canceled". When the operator means "relative to this server" make it
+	// absolute against our cwd. An already-absolute path — including a remote
+	// container's POSIX path (absolute on that host) — is left untouched.
+	if cfg.BrowserRoot != "" && !filepath.IsAbs(cfg.BrowserRoot) {
+		if abs, err := filepath.Abs(cfg.BrowserRoot); err == nil {
+			cfg.BrowserRoot = abs
+		}
+		_ = os.MkdirAll(cfg.BrowserRoot, 0o755)
 	}
 	return cfg
 }

@@ -55,6 +55,10 @@ type Box interface {
 	// actually see (the shared mount): "/" if the whole box is shared, or e.g.
 	// "/downloads". Downloads land here; uploads must be under it.
 	BrowserVRoot() string
+	// Close releases the underlying directory handle. Anything that opens a box
+	// over a directory it later removes (e.g. a test over a t.TempDir) must Close
+	// it — on Windows an open root handle makes the directory undeletable.
+	Close() error
 }
 
 // Canonical normalizes a caller-supplied path to canonical virtual form
@@ -125,20 +129,10 @@ func Open(dir, browserDir, browserVRoot string) (Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	// browserDir is handed verbatim to the browser (Browser.setDownloadBehavior
-	// downloadPath, DOM.setFileInputFiles). It must be an ABSOLUTE path that
-	// EXISTS: a relative value is resolved against Chrome's own working directory
-	// (not ours) and a missing directory makes Chrome start the download then
-	// report state="canceled". Absolutize against our cwd and create it. The
-	// browser shares this host/filesystem in the single-host deployment (the
-	// remote-container case passes an already-absolute path, so this is a no-op).
-	browserDir = strings.TrimSpace(browserDir)
-	if browserDir != "" {
-		if babs, berr := filepath.Abs(browserDir); berr == nil {
-			browserDir = babs
-			_ = os.MkdirAll(browserDir, 0o755)
-		}
-	}
+	// browserDir is the path the BROWSER sees for browserVRoot and is stored
+	// verbatim: it may live on a different filesystem than this server (a
+	// container mount), so it is deliberately NOT absolutized here. Making a
+	// relative host path absolute is a config-time concern (see cmd config).
 	return &local{root: r, dir: abs, browserDir: browserDir, browserVRoot: browserVRoot}, nil
 }
 
@@ -241,3 +235,12 @@ func (b *local) BrowserPath(vpath string) (string, error) {
 }
 
 func (b *local) BrowserVRoot() string { return b.browserVRoot }
+
+// Close releases the os.Root handle. On Windows an open handle keeps the jailed
+// directory from being deleted, so callers must Close a box when done with it.
+func (b *local) Close() error {
+	if b.root == nil {
+		return nil
+	}
+	return b.root.Close()
+}
