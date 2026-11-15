@@ -205,6 +205,18 @@ func (c *Core) resetCapture() {
 	c.mu.Unlock()
 }
 
+// forgetBuffers drops buffered capture (console lines + network records) for a
+// target so closing a tab frees its per-target entries instead of leaking them.
+// Safe to call while c.mu is held: it only takes the capture-map locks.
+func (c *Core) forgetBuffers(targetID string) {
+	c.consolesMu.Lock()
+	delete(c.consoles, targetID)
+	c.consolesMu.Unlock()
+	c.networksMu.Lock()
+	delete(c.networks, targetID)
+	c.networksMu.Unlock()
+}
+
 func (c *Core) firstPage(ctx context.Context) (*targetInfo, bool) {
 	tabs, err := c.listTargets(ctx)
 	if err != nil || len(tabs) == 0 {
@@ -451,6 +463,9 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if err := c.browser.Load().RawCall(ctx, "Target.closeTarget", map[string]string{"targetId": a.TargetID}, nil); err != nil {
 			return mcptransport.ResultError(err.Error()), nil
 		}
+		// Free buffered capture for the closed tab (console lines + network
+		// records) so closing tabs does not leak per-target entries.
+		c.forgetBuffers(a.TargetID)
 		// Drop the closed target's cached session. If it was the current tab,
 		// adopt another live page so current-bound ops (nav/dialog/window/
 		// viewport) do not point at a dead target.

@@ -687,3 +687,36 @@ func TestDownload(t *testing.T) {
 		t.Errorf("download start without box should error")
 	}
 }
+
+// TestTabsCloseForgetsBuffers proves closing a tab frees its per-target capture
+// (console lines + network records) instead of leaking the map entries.
+func TestTabsCloseForgetsBuffers(t *testing.T) {
+	ctx := context.Background()
+	core, err := NewCore(ctx, startFakeCDP(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(core.Close)
+
+	// Seed per-target capture for a background target.
+	core.appendConsole("T-close", "[log] hello")
+	core.networksMu.Lock()
+	core.networks["T-close"] = []*netRec{{}}
+	core.networksMu.Unlock()
+
+	if _, err := core.tabs(ctx, &mcptransport.Call{
+		Arguments: []byte(`{"action":"close","targetId":"T-close"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	core.consolesMu.Lock()
+	_, hc := core.consoles["T-close"]
+	core.consolesMu.Unlock()
+	core.networksMu.Lock()
+	_, hn := core.networks["T-close"]
+	core.networksMu.Unlock()
+	if hc || hn {
+		t.Fatalf("closed target buffers not cleared: console=%v network=%v", hc, hn)
+	}
+}
