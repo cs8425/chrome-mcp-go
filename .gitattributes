@@ -1,0 +1,32 @@
+# Normalize line endings so a checkout is byte-identical on every OS.
+# Go tooling (gofmt, go vet) requires LF; without this, git's core.autocrlf on a
+# Windows checkout yields CRLF and `gofmt -l` flags every single file.
+#
+# eol=lf overrides core.autocrlf at checkout time, so Windows runners get LF too.
+* text=auto eol=lf
+
+# Be explicit for the types that matter (belt and suspenders).
+*.go        text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+*.tmpl      text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.sh        text eol=lf
+*.bat       text eol=lf
+*.ps1       text eol=lf
+
+# Never line-ending-convert real binaries / test fixtures.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.gif  binary
+*.ico  binary
+*.gz   binary
+*.zip  binary
+*.exe  binary
+*.dll  binary
+*.a    binary

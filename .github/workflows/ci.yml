@@ -32,6 +32,14 @@ jobs:
       # is the one thing that genuinely needs a C toolchain).
       CGO_ENABLED: "0"
     steps:
+      # Windows runners ship git with core.autocrlf=true, so a plain checkout
+      # converts LF->CRLF and gofmt then flags every file. Force LF for the
+      # checkout. (.gitattributes also enforces this; this makes CI explicit.)
+      - name: Preserve LF line endings
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-go@v7.0.0
