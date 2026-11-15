@@ -46,7 +46,7 @@ func jsString(s string) string {
 
 var readTool = &mcptransport.Tool{
 	Name:        "read",
-	Description: "Read content from the page: kind text (visible text), html (markup), value (a form field's current value), grid (a table as {headers, rows}), or screenshot (PNG/JPEG image returned inline to the model; use saveAs to write a file instead).",
+	Description: "Read content from the page: kind text (visible text), html (markup), value (a form field's current value), grid (a table as {headers, rows}), or screenshot (PNG/JPEG/WebP image returned inline to the model; use saveAs to write a file instead). Screenshot options: format/quality, fullPage, clip (a \"x,y,width,height\" region in CSS px, page coordinates), and scale (0.1-3, renderer-side so text stays crisp; with no clip it scales the current viewport). When saved, the result reports mode, resolved clip/scale, output size, format and byte count.",
 	InputSchema: mcptransport.Schema{
 		Type: mcptransport.TypeObject,
 		Properties: map[string]mcptransport.Schema{
@@ -60,6 +60,8 @@ var readTool = &mcptransport.Tool{
 			"format":   {Type: mcptransport.TypeString, Description: "screenshot: png (default) | jpeg | webp", Enum: []string{"png", "jpeg", "webp"}},
 			"quality":  {Type: mcptransport.TypeNumber, Description: "screenshot: compression quality 0-100 (jpeg/webp only)"},
 			"fullPage": {Type: mcptransport.TypeBoolean, Description: "screenshot: capture beyond the viewport (full scrollable page)"},
+			"clip":     {Type: mcptransport.TypeString, Description: `screenshot: region to capture, "x,y,width,height" in CSS px (page coordinates)`},
+			"scale":    {Type: mcptransport.TypeNumber, Description: "screenshot: output scale 0.1-3 (renderer-side, text stays crisp); with no clip it scales the current viewport"},
 			"saveAs":   {Type: mcptransport.TypeString, Description: "screenshot: write the image to this file path and return the path instead of the inline image"},
 		},
 	},
@@ -67,13 +69,15 @@ var readTool = &mcptransport.Tool{
 
 func (c *Core) read(ctx context.Context, call *mcptransport.Call) (*mcptransport.ToolResult, error) {
 	var a struct {
-		Kind     string `json:"kind"`
-		Selector string `json:"selector"`
-		MaxBytes int    `json:"maxBytes"`
-		Format   string `json:"format"`
-		Quality  int    `json:"quality"`
-		FullPage bool   `json:"fullPage"`
-		SaveAs   string `json:"saveAs"`
+		Kind     string  `json:"kind"`
+		Selector string  `json:"selector"`
+		MaxBytes int     `json:"maxBytes"`
+		Format   string  `json:"format"`
+		Quality  int     `json:"quality"`
+		FullPage bool    `json:"fullPage"`
+		Clip     string  `json:"clip"`
+		Scale    float64 `json:"scale"`
+		SaveAs   string  `json:"saveAs"`
 	}
 	if err := json.Unmarshal(call.Arguments, &a); err != nil {
 		return mcptransport.ResultError("bad arguments: " + err.Error()), nil
@@ -156,8 +160,38 @@ func (c *Core) read(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if (format == "jpeg" || format == "webp") && a.Quality > 0 {
 			params["quality"] = a.Quality
 		}
-		if a.FullPage {
+		mode := "viewport"
+		clip := map[string]any{}
+		hasClip := false
+		if a.Clip != "" {
+			x, y, w, h, ok := parseClip(a.Clip)
+			if !ok {
+				return mcptransport.ResultError("bad clip: " + a.Clip + ` (want "x,y,width,height" in CSS px)`), nil
+			}
+			clip["x"], clip["y"], clip["width"], clip["height"] = x, y, w, h
+			hasClip = true
+			mode = "region"
+		}
+		// A scale with no explicit region is applied over the current viewport box.
+		if !hasClip && a.Scale > 0 {
+			vpBox, verr := viewportBox(ctx, page)
+			if verr != nil {
+				return mcptransport.ResultError(verr.Error()), nil
+			}
+			clip = vpBox
+			hasClip = true
+		}
+		scale := 1.0
+		if a.Scale > 0 {
+			scale = clampScale(a.Scale)
+		}
+		if hasClip {
+			clip["scale"] = scale
+			params["clip"] = clip
+		}
+		if a.FullPage && !hasClip {
 			params["captureBeyondViewport"] = true
+			mode = "full_page"
 		}
 		var shot struct {
 			Data string `json:"data"`
@@ -168,11 +202,12 @@ func (c *Core) read(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if shot.Data == "" {
 			return mcptransport.ResultError("screenshot returned no data"), nil
 		}
+		raw, err := base64.StdEncoding.DecodeString(shot.Data)
+		if err != nil {
+			return mcptransport.ResultError("screenshot decode: " + err.Error()), nil
+		}
+		meta := screenshotMeta(mode, a.Clip, scale, hasClip, format, len(raw), raw)
 		if a.SaveAs != "" {
-			raw, err := base64.StdEncoding.DecodeString(shot.Data)
-			if err != nil {
-				return mcptransport.ResultError("screenshot decode: " + err.Error()), nil
-			}
 			box := c.fileBox()
 			if box == nil {
 				return mcptransport.ResultError(filebox.ErrNoRoot.Error()), nil
@@ -184,7 +219,7 @@ func (c *Core) read(ctx context.Context, call *mcptransport.Call) (*mcptransport
 			if cv, cerr := filebox.Canonical(a.SaveAs); cerr == nil {
 				vp = cv
 			}
-			return mcptransport.ResultText("screenshot saved: " + vp), nil
+			return mcptransport.ResultText("screenshot saved: " + vp + " (" + meta + ")"), nil
 		}
 		return mcptransport.ResultImage(shot.Data, "image/"+format), nil
 
