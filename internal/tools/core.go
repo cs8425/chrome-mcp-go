@@ -36,13 +36,15 @@ type Core struct {
 	unsub            func()
 	attached         map[string]string // targetId->sessionId for per-target ops (viewport) without stealing current
 
-	consoles     map[string][]string // targetID -> buffered console/exception/log lines
-	consolesMu   sync.Mutex
-	consoleUnsub []func() // console-capture subscriptions for the current tab
+	consoles    map[string][]string // targetID -> buffered console/exception/log lines
+	consolesMu  sync.Mutex
+	consoleSubs map[string][]func() // targetID -> console capture subs (alive for the tab's lifetime)
 
-	networks     map[string][]*netRec // targetID -> captured request records (append order)
-	networksMu   sync.Mutex
-	networkUnsub []func() // network-capture subscriptions for the current tab
+	networks    map[string][]*netRec // targetID -> captured request records (append order)
+	networksMu  sync.Mutex
+	networkSubs map[string][]func() // targetID -> network capture subs (alive for the tab's lifetime)
+
+	targetUnsub func() // browser-level Target.targetCreated watcher (capture new tabs from birth)
 
 	maxBytes int // bounds tool-result text size (config-adjustable); 0 => defaultMaxBytes
 
@@ -66,13 +68,15 @@ func NewCore(ctx context.Context, hostPort string) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Core{hostPort: hostPort, attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, maxBytes: defaultMaxBytes}
+	c := &Core{hostPort: hostPort, attached: map[string]string{}, consoles: map[string][]string{}, networks: map[string][]*netRec{}, consoleSubs: map[string][]func(){}, networkSubs: map[string][]func(){}, maxBytes: defaultMaxBytes}
 	c.conn.Store(conn)
 	c.browser.Store(conn.Client(""))
 	// Adopt the first page target, if any (never raise the window on startup).
 	if info, ok := c.firstPage(ctx); ok {
 		_ = c.selectTarget(ctx, info.TargetID, false)
 	}
+	// Capture tabs the page opens itself (popups, target=_blank) from birth.
+	c.startTargetWatch(ctx)
 	return c, nil
 }
 
@@ -175,6 +179,7 @@ func (c *Core) reconnect(ctx context.Context) error {
 	c.mu.Unlock()
 
 	c.resetCapture()
+	c.startTargetWatch(ctx)
 
 	// Re-adopt the first page target so page-scoped tools have a current tab
 	// (do not raise the window: reconnecting must not steal focus).
@@ -200,14 +205,16 @@ func (c *Core) resetCapture() {
 	c.downloadUnsub = nil
 	c.downloadsMu.Unlock()
 	c.mu.Lock()
-	c.consoleUnsub = nil
-	c.networkUnsub = nil
+	c.consoleSubs = map[string][]func(){}
+	c.networkSubs = map[string][]func(){}
+	c.targetUnsub = nil
 	c.mu.Unlock()
 }
 
-// forgetBuffers drops buffered capture (console lines + network records) for a
-// target so closing a tab frees its per-target entries instead of leaking them.
-// Safe to call while c.mu is held: it only takes the capture-map locks.
+// forgetBuffers frees a closed target's capture: buffered console lines, network
+// records, and its per-target subscriptions (the cached session is dropped by
+// the caller). Must NOT be called while holding c.mu — it takes c.mu for the
+// subscription maps.
 func (c *Core) forgetBuffers(targetID string) {
 	c.consolesMu.Lock()
 	delete(c.consoles, targetID)
@@ -215,6 +222,19 @@ func (c *Core) forgetBuffers(targetID string) {
 	c.networksMu.Lock()
 	delete(c.networks, targetID)
 	c.networksMu.Unlock()
+
+	c.mu.Lock()
+	cu := c.consoleSubs[targetID]
+	nu := c.networkSubs[targetID]
+	delete(c.consoleSubs, targetID)
+	delete(c.networkSubs, targetID)
+	c.mu.Unlock()
+	for _, u := range cu {
+		u()
+	}
+	for _, u := range nu {
+		u()
+	}
 }
 
 func (c *Core) firstPage(ctx context.Context) (*targetInfo, bool) {
@@ -223,6 +243,59 @@ func (c *Core) firstPage(ctx context.Context) (*targetInfo, bool) {
 		return nil, false
 	}
 	return &tabs[0], true
+}
+
+// startTargetWatch begins capturing console/network for page targets as they are
+// created, so tabs the page opens itself (popups, target=_blank, OAuth windows)
+// are captured from birth — not only once the agent selects them. Idempotent.
+func (c *Core) startTargetWatch(ctx context.Context) {
+	c.mu.Lock()
+	if c.targetUnsub != nil {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+
+	un := c.browser.Load().Subscribe("Target.targetCreated", func(params json.RawMessage) {
+		var e struct {
+			TargetInfo targetInfo `json:"targetInfo"`
+		}
+		if json.Unmarshal(params, &e) != nil || e.TargetInfo.Type != "page" || e.TargetInfo.TargetID == "" {
+			return
+		}
+		tid := e.TargetInfo.TargetID
+		// Never block the read loop: attach/enable round-trips run async.
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			c.captureTarget(bg, tid)
+		}()
+	})
+	c.mu.Lock()
+	c.targetUnsub = un
+	c.mu.Unlock()
+
+	// Ask the browser to emit Target.targetCreated events.
+	_ = c.browser.Load().RawCall(ctx, "Target.setDiscoverTargets", map[string]bool{"discover": true}, nil)
+}
+
+// captureTarget attaches to targetID (without changing the current tab) and
+// starts console + network capture. Safe to call repeatedly; a no-op once the
+// target is being captured. Used to prime every visible tab on `tabs list` and
+// to pick up freshly created page targets.
+func (c *Core) captureTarget(ctx context.Context, targetID string) {
+	c.mu.Lock()
+	_, active := c.consoleSubs[targetID]
+	c.mu.Unlock()
+	if active {
+		return
+	}
+	sess, err := c.ensureAttached(ctx, targetID)
+	if err != nil {
+		return // target gone or attach failed
+	}
+	c.startConsoleCapture(ctx, sess, targetID)
+	c.startNetworkCapture(ctx, sess, targetID)
 }
 
 // page returns a client bound to the current tab's session.
@@ -264,27 +337,22 @@ func (c *Core) selectTarget(ctx context.Context, targetID string, activate bool)
 			return err
 		}
 	}
-	var res struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := c.browser.Load().RawCall(ctx, "Target.attachToTarget",
-		map[string]any{"targetId": targetID, "flatten": true}, &res); err != nil {
+	// Attach once; the session is cached and reused across selects so the capture
+	// subscriptions below bind to a stable session.
+	sess, err := c.ensureAttached(ctx, targetID)
+	if err != nil {
 		return err
 	}
 
+	// Dialogs are tracked for the current tab only.
 	c.mu.Lock()
 	if c.unsub != nil {
 		c.unsub() // drop the previous tab's dialog subscription
 	}
 	c.targetID = targetID
-	c.sessionID = res.SessionID
+	c.sessionID = sess.SessionID()
 	c.dlg = nil
-	c.mu.Unlock()
-
-	// Track dialogs on this tab (Page.javascriptDialogOpening).
-	page := c.conn.Load().Client(res.SessionID)
-	c.mu.Lock()
-	c.unsub = page.Subscribe("Page.javascriptDialogOpening", func(params json.RawMessage) {
+	c.unsub = sess.Subscribe("Page.javascriptDialogOpening", func(params json.RawMessage) {
 		var d dialogState
 		_ = json.Unmarshal(params, &d)
 		d.Pending = true
@@ -295,11 +363,11 @@ func (c *Core) selectTarget(ctx context.Context, targetID string, activate bool)
 	c.mu.Unlock()
 
 	// Enable Page so the dialog event fires.
-	_ = page.RawCall(ctx, "Page.enable", nil, nil)
-	// Capture console/exception/log output for this tab going forward.
-	c.startConsoleCapture(ctx, page, targetID)
-	// Capture network requests for this tab going forward.
-	c.startNetworkCapture(ctx, page, targetID)
+	_ = sess.RawCall(ctx, "Page.enable", nil, nil)
+	// Capture console + network for this tab. Idempotent and persistent: the tab
+	// keeps being captured even after it stops being the current tab.
+	c.startConsoleCapture(ctx, sess, targetID)
+	c.startNetworkCapture(ctx, sess, targetID)
 	return nil
 }
 
@@ -426,6 +494,11 @@ func (c *Core) tabs(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		pages, err := c.listTargets(ctx)
 		if err != nil {
 			return mcptransport.ResultError(err.Error()), nil
+		}
+		// Ensure every visible tab is being captured (covers tabs that existed
+		// before we started watching), then report.
+		for _, p := range pages {
+			c.captureTarget(ctx, p.TargetID)
 		}
 		return jsonResult(pages)
 	case "new":

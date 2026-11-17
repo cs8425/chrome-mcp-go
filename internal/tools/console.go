@@ -16,10 +16,15 @@ import (
 
 const maxConsoleLines = 500
 
-// startConsoleCapture subscribes the given tab's session to console/exception/
-// log events, buffering formatted lines under targetID. It replaces any capture
-// from a previously selected tab.
+// startConsoleCapture subscribes a tab's session to console/exception/log events,
+// buffering formatted lines under targetID. Subscriptions are per-target and live
+// for the tab's whole life, so a tab keeps capturing even when it is not the
+// current tab; re-selecting an already-captured tab is a no-op (no duplicate
+// entries, no repeated Log replay).
 func (c *Core) startConsoleCapture(ctx context.Context, page *cdp.Client, targetID string) {
+	if !c.claimConsole(targetID) {
+		return
+	}
 	var unsubs []func()
 
 	unsubs = append(unsubs, page.Subscribe("Runtime.consoleAPICalled", func(params json.RawMessage) {
@@ -82,18 +87,29 @@ func (c *Core) startConsoleCapture(ctx context.Context, page *cdp.Client, target
 		c.appendConsole(targetID, "["+e.Entry.Level+"] "+e.Entry.Text)
 	}))
 
-	// Drop the previous tab's subscriptions, then install the new ones.
+	// Install the per-target subscriptions (kept until the tab closes).
 	c.mu.Lock()
-	old := c.consoleUnsub
-	c.consoleUnsub = unsubs
+	c.consoleSubs[targetID] = unsubs
 	c.mu.Unlock()
-	for _, u := range old {
-		u()
-	}
 
 	// Enable after subscribing so Log's replay of past entries is captured.
 	_ = page.RawCall(ctx, "Runtime.enable", nil, nil)
 	_ = page.RawCall(ctx, "Log.enable", nil, nil)
+}
+
+// claimConsole reserves targetID for console capture, returning true only for the
+// first caller. A caller that gets false must not subscribe (capture is active).
+func (c *Core) claimConsole(targetID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.consoleSubs == nil {
+		c.consoleSubs = map[string][]func(){}
+	}
+	if _, ok := c.consoleSubs[targetID]; ok {
+		return false
+	}
+	c.consoleSubs[targetID] = []func(){} // reserved; replaced with real subs below
+	return true
 }
 
 func (c *Core) appendConsole(targetID, line string) {
@@ -111,29 +127,39 @@ func (c *Core) appendConsole(targetID, line string) {
 
 var consoleTool = &mcptransport.Tool{
 	Name:        "console",
-	Description: "Read buffered console messages and uncaught exceptions for the current tab. Narrow with level (log|info|warning|error|debug) or grep (regex); clear empties the buffer.",
+	Description: "Read buffered console messages and uncaught exceptions for a tab (default the current tab; pass targetId to read another without switching). Every tab is captured continuously, so switching tabs never loses console output. Narrow with level (log|info|warning|error|debug) or grep (regex); clear empties the buffer.",
 	InputSchema: mcptransport.Schema{
 		Type: mcptransport.TypeObject,
 		Properties: map[string]mcptransport.Schema{
-			"action": {Type: mcptransport.TypeString, Description: "list (default) | clear", Enum: []string{"list", "clear"}},
-			"level":  {Type: mcptransport.TypeString, Description: "only these levels: debug|log|info|warn|error"},
-			"grep":   {Type: mcptransport.TypeString, Description: "only lines matching this regex"},
-			"limit":  {Type: mcptransport.TypeNumber, Description: "most recent N matching lines"},
+			"action":   {Type: mcptransport.TypeString, Description: "list (default) | clear", Enum: []string{"list", "clear"}},
+			"targetId": {Type: mcptransport.TypeString, Description: "read (and start capturing) this specific tab by id; defaults to the current tab — inspect several tabs without switching current"},
+			"level":    {Type: mcptransport.TypeString, Description: "only these levels: debug|log|info|warn|error"},
+			"grep":     {Type: mcptransport.TypeString, Description: "only lines matching this regex"},
+			"limit":    {Type: mcptransport.TypeNumber, Description: "most recent N matching lines"},
 		},
 	},
 }
 
 func (c *Core) console(ctx context.Context, call *mcptransport.Call) (*mcptransport.ToolResult, error) {
 	var a struct {
-		Action string `json:"action"`
-		Level  string `json:"level"`
-		Grep   string `json:"grep"`
-		Limit  int    `json:"limit"`
+		Action   string `json:"action"`
+		TargetID string `json:"targetId"`
+		Level    string `json:"level"`
+		Grep     string `json:"grep"`
+		Limit    int    `json:"limit"`
 	}
 	if err := json.Unmarshal(call.Arguments, &a); err != nil {
 		return mcptransport.ResultError("bad arguments: " + err.Error()), nil
 	}
-	target := c.currentTargetID()
+	// Read a specific tab by id (default: current). Naming a tab also starts its
+	// capture (idempotent, without making it current) so multi-tab reads need no
+	// current-tab switching — and no select/read race.
+	target := a.TargetID
+	if target == "" {
+		target = c.currentTargetID()
+	} else {
+		c.captureTarget(ctx, target)
+	}
 
 	if a.Action == "clear" {
 		c.consolesMu.Lock()
