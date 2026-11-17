@@ -149,7 +149,7 @@ func (c *Core) read(ctx context.Context, call *mcptransport.Call) (*mcptransport
 		if string(val) == "null" {
 			return mcptransport.ResultError("no table found"), nil
 		}
-		return mcptransport.ResultText(c.cap(string(val), a.MaxBytes)), nil
+		return mcptransport.ResultText(c.cap(string(normalizeJSON(val)), a.MaxBytes)), nil
 
 	case "screenshot":
 		format := a.Format

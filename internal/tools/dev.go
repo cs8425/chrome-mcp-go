@@ -80,7 +80,7 @@ func (c *Core) evaluate(ctx context.Context, call *mcptransport.Call) (*mcptrans
 		return mcptransport.ResultError("eval error: " + c.cap(txt, a.MaxBytes)), nil
 	}
 	if len(res.Result.Value) > 0 {
-		return mcptransport.ResultText(c.cap(string(res.Result.Value), a.MaxBytes)), nil
+		return mcptransport.ResultText(c.cap(string(normalizeJSON(res.Result.Value)), a.MaxBytes)), nil
 	}
 	// undefined, or a non-serializable object with no JSON value.
 	if res.Result.Description != "" {

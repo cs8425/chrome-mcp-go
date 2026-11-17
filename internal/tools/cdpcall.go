@@ -58,5 +58,5 @@ func (c *Core) cdpCall(ctx context.Context, call *mcptransport.Call) (*mcptransp
 	if len(res) == 0 || string(res) == "{}" {
 		return mcptransport.ResultText("{}"), nil
 	}
-	return mcptransport.ResultText(c.cap(string(res), 0)), nil
+	return mcptransport.ResultText(c.cap(string(normalizeJSON(res)), 0)), nil
 }

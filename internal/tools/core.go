@@ -771,7 +771,7 @@ func (c *Core) window(ctx context.Context, call *mcptransport.Call) (*mcptranspo
 
 // jsonResult marshals v as indented JSON into a text result.
 func jsonResult(v any) (*mcptransport.ToolResult, error) {
-	b, err := json.MarshalIndent(v, "", "  ")
+	b, err := jsonUTF8Indent(v)
 	if err != nil {
 		return mcptransport.ResultError("marshal: " + err.Error()), nil
 	}

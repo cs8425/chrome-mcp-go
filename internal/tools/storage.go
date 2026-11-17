@@ -87,7 +87,7 @@ func (c *Core) storageCookie(ctx context.Context, page *cdp.Client, a *storageAr
 		if len(res.Cookies) == 0 {
 			return mcptransport.ResultText("(no cookies)"), nil
 		}
-		j, _ := json.Marshal(res.Cookies)
+		j, _ := jsonUTF8(res.Cookies)
 		return mcptransport.ResultText(c.cap(string(j), 0)), nil
 	case "set":
 		if a.Name == "" {
@@ -233,7 +233,7 @@ func (c *Core) storageStateSave(ctx context.Context, path string) (*mcptransport
 		st.Origins = []stateOrigin{o}
 	}
 
-	data, err := json.MarshalIndent(&st, "", "  ")
+	data, err := jsonUTF8Indent(&st)
 	if err != nil {
 		return mcptransport.ResultError(err.Error()), nil
 	}

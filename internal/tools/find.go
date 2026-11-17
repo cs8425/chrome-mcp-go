@@ -86,5 +86,5 @@ func (c *Core) find(ctx context.Context, call *mcptransport.Call) (*mcptransport
 	if err != nil {
 		return mcptransport.ResultError(err.Error()), nil
 	}
-	return mcptransport.ResultText(c.cap(string(val), 0)), nil
+	return mcptransport.ResultText(c.cap(string(normalizeJSON(val)), 0)), nil
 }
